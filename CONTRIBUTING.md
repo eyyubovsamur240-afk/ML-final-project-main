@@ -200,8 +200,8 @@ Record decisions (e.g. "we drop `unit_price` because …") in the issue or PR, s
    `git push origin :refs/tags/v1.0-final && git tag -d v1.0-final`, and tag again.
    Do this **only before the deadline**: never move the tag afterwards.
 6. **One** member submits on Moodle: the repo link (tag `v1.0-final`), the report PDF and the slides PDF.
-   Make sure the graders can access the repo (it's private: add them as collaborators
-   or follow the course's instructions).
+   Make sure the graders can access the repo (it's public, so the link is enough, unless
+   the course says otherwise).
 
 ## 10. Repo settings (repo owner, once)
 
@@ -217,11 +217,11 @@ Record decisions (e.g. "we drop `unit_price` because …") in the issue or PR, s
 - **Require status checks to pass**, adding `Lint & repo rules` and `Tests` (they appear in the list
   after CI has run once). Tick "Require branches to be up to date before merging" only if merge races become a problem.
 
-Rulesets and branch protection on a **private** repository need **GitHub Pro** on the owner's account.
-Students get Pro free with the [GitHub Student Developer Pack](https://education.github.com/pack).
-Without it, GitHub won't enforce the rules. CI still runs on every PR, and the `pre-commit`
-hook `no-commit-to-branch` blocks local commits to `main` for anyone who ran `pre-commit install`,
-but the rest relies on team discipline.
+This repository is **public**, so rulesets are enforced on the free plan, and GitHub Actions
+minutes are unlimited. (If it is ever made private again, rulesets need **GitHub Pro** on the
+owner's account, which is free with the [GitHub Student Developer Pack](https://education.github.com/pack).
+Without Pro, the rules are not enforced, and only CI plus the `no-commit-to-branch` pre-commit hook remain.)
 
-GitHub Actions minutes: private repos on free plans include a monthly allowance (2,000 min on Free).
-This project's CI uses about 1–3 minutes per run, which is plenty for two weeks.
+Because the repo is public, anyone can read it: never commit the dataset, credentials or personal data.
+To keep your email out of future commits, turn on **Settings → Emails → Keep my email address private**
+on your GitHub account and use the `…@users.noreply.github.com` address it shows as your `git config user.email`.
