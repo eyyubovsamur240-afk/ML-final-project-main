@@ -1,6 +1,5 @@
 name: Task
 description: A piece of project work for one owner (code, experiment, report section, slides)
-labels: ["task"]
 body:
   - type: dropdown
     id: area

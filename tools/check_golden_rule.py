@@ -4,10 +4,14 @@ check_golden_rule.py — enforce the project's golden rule in CI.
     "Your decision tree and your SVM must be your own NumPy implementations."
 
 Every file in PROTECTED may import only NumPy, the Python standard library,
-and other modules of this package (relative imports such as
-`from .decision_tree import DecisionTree`). Anything else (scikit-learn,
-SciPy, cvxpy, libsvm, ...) is reported, as is any dynamic import
-(`importlib.import_module`, `__import__`) that could sneak one in.
+and the project's own modules (`from .evaluate import ...`, `from src.data_prep
+import ...`). Anything else (scikit-learn, SciPy, cvxpy, libsvm, ...) is
+reported, as is any dynamic import (`importlib.import_module`, `__import__`)
+that could sneak one in.
+
+Own modules imported by a protected file are followed (recursively): they may
+use pandas, matplotlib or sklearn.metrics, but must not pull in a model or
+optimiser (MODEL_MODULES); otherwise a wrapper module would bypass the rule.
 
 Run from the repo root:
     python tools/check_golden_rule.py               # check every PROTECTED file
@@ -23,7 +27,14 @@ import os
 import sys
 from pathlib import Path
 
+if sys.version_info < (3, 10):
+    raise SystemExit(
+        f"Python 3.10+ needed (the team uses 3.11, see CONTRIBUTING.md); "
+        f"this is {sys.version.split()[0]}"
+    )
+
 ROOT = Path(__file__).resolve().parent.parent
+SRC = ROOT / "src"
 
 # Files that must be your OWN NumPy code. If you build bonus models from your
 # own trees (e.g. src/ensemble.py for a random forest), add them here too.
@@ -37,28 +48,83 @@ PROTECTED = [
 # a model/optimiser library.
 ALLOWED_THIRD_PARTY = {"numpy"}
 
+# Models/optimisers that must not reach a protected file through one of our own
+# modules (a module and everything below it, e.g. "sklearn.svm" covers sklearn.svm._classes).
+MODEL_MODULES = {
+    "sklearn.svm", "sklearn.tree", "sklearn.linear_model", "sklearn.ensemble",
+    "sklearn.neighbors", "sklearn.neural_network", "sklearn.kernel_ridge",
+    "scipy.optimize", "statsmodels", "cvxpy", "cvxopt", "libsvm", "svmlight",
+    "torch", "tensorflow", "keras", "jax", "xgboost", "lightgbm", "catboost",
+}
+
 STDLIB = set(sys.stdlib_module_names)
+OWN_PACKAGE = "src"
 
 
-def _is_allowed(module: str) -> bool:
-    top = module.split(".")[0]
-    return top in ALLOWED_THIRD_PARTY or top in STDLIB
+def _own_targets(node: ast.Import | ast.ImportFrom, alias: ast.alias) -> list[Path] | None:
+    """Files of our own package that this import pulls in, or None if it is not our package."""
+    if isinstance(node, ast.ImportFrom):
+        own = node.level > 0 or (node.module or "").split(".")[0] == OWN_PACKAGE
+        if not own:
+            return None
+        parts = [p for p in (node.module or "").split(".") if p]
+        if node.level == 0:
+            parts = parts[1:]  # drop the leading "src"
+        # `from . import evaluate` / `from src import evaluate`: the alias is the module
+        candidates = [parts + [alias.name], parts] if parts else [[alias.name]]
+    else:
+        parts = alias.name.split(".")
+        if parts[0] != OWN_PACKAGE:
+            return None
+        candidates = [parts[1:]]
+    files = [SRC.joinpath(*c).with_suffix(".py") for c in candidates if c]
+    return [f for f in files if f.is_file()][:1]
 
 
-def find_violations(path: Path) -> list[tuple[int, str]]:
-    """Return (line, message) for every disallowed import in `path`."""
-    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+def find_violations(path: Path, _seen: set[Path] | None = None,
+                    _followed: bool = False) -> list[tuple[int, str]]:
+    """Return (line, message) for every disallowed import in `path`.
+
+    In a protected file every import other than NumPy, the standard library and our
+    own modules is disallowed. Our own modules are followed; there, only the
+    MODEL_MODULES are disallowed.
+    """
+    seen = _seen if _seen is not None else set()
+    seen.add(path.resolve())
+    try:
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    except SyntaxError as exc:
+        return [(exc.lineno or 0, f"syntax error ({exc.msg}); fix it first")]
+
     problems: list[tuple[int, str]] = []
+
+    def check_module(line: int, module: str, names: list[str]) -> None:
+        if _followed:
+            # `from sklearn import svm` imports the model module "sklearn.svm"
+            full = [module] + [f"{module}.{n}" for n in names]
+            bad = any(f == m or f.startswith(m + ".") for f in full for m in MODEL_MODULES)
+        else:
+            top = module.split(".")[0]
+            bad = top not in ALLOWED_THIRD_PARTY and top not in STDLIB
+        if bad:
+            problems.append((line, f"import of '{module}' is not allowed"))
+
     for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
             for alias in node.names:
-                if not _is_allowed(alias.name):
-                    problems.append((node.lineno, f"import of '{alias.name}' is not allowed"))
-        elif isinstance(node, ast.ImportFrom):
-            if node.level > 0:  # relative import of our own code: fine
-                continue
-            if node.module and not _is_allowed(node.module):
-                problems.append((node.lineno, f"import from '{node.module}' is not allowed"))
+                targets = _own_targets(node, alias)
+                if targets is None:
+                    if isinstance(node, ast.ImportFrom):  # one check per `from X import a, b`
+                        check_module(node.lineno, node.module or "", [a.name for a in node.names])
+                        break
+                    check_module(node.lineno, alias.name, [])
+                    continue
+                for target in targets:
+                    if target.resolve() in seen:
+                        continue
+                    rel = target.relative_to(ROOT).as_posix()
+                    for sub_line, msg in find_violations(target, seen, _followed=True):
+                        problems.append((node.lineno, f"{rel}:{sub_line} (imported here): {msg}"))
         elif isinstance(node, ast.Call):
             func = node.func
             name = (
@@ -72,10 +138,14 @@ def find_violations(path: Path) -> list[tuple[int, str]]:
 
 
 def main(argv: list[str]) -> int:
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
     targets = argv or PROTECTED
     in_ci = os.environ.get("GITHUB_ACTIONS") == "true"
     failed = False
     for rel in targets:
+        rel = rel.replace("\\", "/")
         path = ROOT / rel
         if not path.exists():
             print(f"{rel}: protected file is missing — update PROTECTED in {Path(__file__).name}")
@@ -83,7 +153,7 @@ def main(argv: list[str]) -> int:
             continue
         for line, msg in find_violations(path):
             failed = True
-            text = (
+            text = msg if msg.startswith("syntax error") else (
                 f"{msg}. Golden rule: the decision tree and the SVM must be your own "
                 "NumPy code (scikit-learn is for the baselines only)."
             )
@@ -91,7 +161,10 @@ def main(argv: list[str]) -> int:
                 print(f"::error file={rel},line={line},title=Golden rule::{text}")
             print(f"{rel}:{line}: {text}")
     if not failed:
-        print(f"Golden rule OK: {', '.join(targets)} use only NumPy + the standard library.")
+        print(
+            f"Golden rule OK ({', '.join(targets)}): only NumPy, the standard library "
+            "and our own modules (which import no model library)."
+        )
     return 1 if failed else 0
 
 

@@ -9,8 +9,9 @@ spot an imbalance early (not the night before the deadline).
 Run from the repo root (needs full history: `git fetch --unshallow` in CI):
     python tools/contrib_stats.py
 
-Counts non-merge commits on the current branch. With "Squash and merge",
-each PR counts once, for the PR author (plus any Co-authored-by trailers).
+Counts non-merge commits on the current branch after the course starter pack
+(STARTER), which is course-provided code, not team work. Rows are per author
+name; add a .mailmap to merge one person's different names/emails.
 """
 
 from __future__ import annotations
@@ -22,6 +23,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 SEP = "\x1f"
+STARTER = "dd5e816"  # "Add ML final project starter pack": it and earlier commits are excluded
 
 
 def git(*args: str) -> str:
@@ -31,8 +33,16 @@ def git(*args: str) -> str:
 
 
 def main() -> int:
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
     fmt = f"@@{SEP}%aN{SEP}%ad{SEP}%(trailers:key=Co-authored-by,valueonly,separator=;)"
-    log = git("log", "--no-merges", "--numstat", f"--format={fmt}", "--date=short")
+    try:
+        git("cat-file", "-e", f"{STARTER}^{{commit}}")
+        revs, note = [f"{STARTER}..HEAD"], f"_Course starter pack ({STARTER}) and earlier excluded._"
+    except subprocess.CalledProcessError:
+        revs, note = ["HEAD"], f"_Starter commit {STARTER} not found: counting the whole history._"
+    log = git("log", *revs, "--no-merges", "--numstat", f"--format={fmt}", "--date=short")
     stats: dict[str, dict] = defaultdict(
         lambda: {"commits": 0, "co": 0, "added": 0, "deleted": 0, "days": set()}
     )
@@ -54,6 +64,7 @@ def main() -> int:
 
     total = sum(s["commits"] for s in stats.values()) or 1
     print("## Contributions on this branch (from Git history)\n")
+    print(note + "\n")
     print("| Author | Commits | Share | Co-authored | Lines + / − | Active days |")
     print("|---|---:|---:|---:|---:|---:|")
     for name, s in sorted(stats.items(), key=lambda kv: -kv[1]["commits"]):
@@ -63,7 +74,8 @@ def main() -> int:
         )
     print(
         "\n_Lines are a rough signal, not a score — a careful 50-line fix can matter more than "
-        "a 500-line dump. Same person under two names? Fix your `git config user.email`._"
+        "a 500-line dump. Same person under two names? Use one `git config user.name` "
+        "everywhere, and add a `.mailmap` line `Real Name <email>` to merge past commits._"
     )
     return 0
 

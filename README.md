@@ -56,7 +56,7 @@ only. For the SVM you do **not** need a QP/SMO solver — use the
 
 ## Quick start
 ```bash
-python -m venv .venv && source .venv/bin/activate
+python3.11 -m venv .venv && source .venv/bin/activate   # Python 3.11, see CONTRIBUTING.md
 pip install -r requirements.txt
 # put the dataset in data/ (see data/README.md), then:
 python -m src.run_all

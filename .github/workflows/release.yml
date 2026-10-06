@@ -57,6 +57,8 @@ jobs:
           echo "Attaching: ${files[*]}"
           if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
             gh release upload "$TAG" "${files[@]}" --clobber --repo "$GITHUB_REPOSITORY"
+            # A moved tag turns its old release into a draft; publish it again.
+            gh release edit "$TAG" --draft=false --repo "$GITHUB_REPOSITORY"
           else
             gh release create "$TAG" "${files[@]}" --repo "$GITHUB_REPOSITORY" \
               --title "$TAG" --generate-notes --verify-tag

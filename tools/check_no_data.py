@@ -7,7 +7,7 @@ check fails if any tracked file:
   - lives in data/ (other than data/README.md and .gitkeep files),
   - has a dataset / model-dump extension (.csv, .zip, .parquet, .pkl, ...),
     except small fixtures under tests/,
-  - is larger than MAX_MB.
+  - is larger than MAX_MB (DELIVERABLE_PDF_MAX_MB for the report/slides PDFs).
 
 Run from the repo root:
     python tools/check_no_data.py            # check every tracked file
@@ -22,7 +22,8 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-MAX_MB = 5
+MAX_MB = 5                    # keep in sync with --maxkb in .pre-commit-config.yaml
+DELIVERABLE_PDF_MAX_MB = 25   # report/*.pdf and presentation/*.pdf (slides with screenshots)
 TEST_FIXTURE_MAX_KB = 100
 
 DATA_EXTENSIONS = {
@@ -35,9 +36,12 @@ DATA_DIR_ALLOWED = {"data/README.md"}
 
 
 def tracked_files() -> list[str]:
-    out = subprocess.run(
-        ["git", "ls-files", "-z"], cwd=ROOT, check=True, capture_output=True
-    ).stdout.decode("utf-8")
+    try:
+        out = subprocess.run(
+            ["git", "ls-files", "-z"], cwd=ROOT, check=True, capture_output=True
+        ).stdout.decode("utf-8")
+    except (subprocess.CalledProcessError, FileNotFoundError) as exc:
+        raise SystemExit("check_no_data: not a git checkout; run it inside the cloned repo") from exc
     return [f for f in out.split("\0") if f]
 
 
@@ -57,12 +61,18 @@ def problems_for(rel: str) -> list[str]:
         found.append(
             "looks like a dataset or model dump; regenerate it with code instead of committing it"
         )
-    if size > MAX_MB * 1024 * 1024:
-        found.append(f"file is {size / 1024 / 1024:.1f} MB (limit {MAX_MB} MB)")
+    deliverable = rel.startswith(("report/", "presentation/")) and name.endswith(".pdf")
+    limit = DELIVERABLE_PDF_MAX_MB if deliverable else MAX_MB
+    if size > limit * 1024 * 1024:
+        hint = " — compress it (e.g. export with smaller images)" if deliverable else ""
+        found.append(f"file is {size / 1024 / 1024:.1f} MB (limit {limit} MB){hint}")
     return found
 
 
 def main(argv: list[str]) -> int:
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
     files = argv or tracked_files()
     in_ci = os.environ.get("GITHUB_ACTIONS") == "true"
     failed = False
@@ -73,7 +83,7 @@ def main(argv: list[str]) -> int:
                 print(f"::error file={rel},title=No data in Git::{msg}")
             print(f"{rel}: {msg}")
     if failed:
-        print("\nIf you staged it by accident: git rm --cached <file>  (keeps your local copy)")
+        print("\nData file staged by accident? git rm --cached <file>  (keeps your local copy)")
     else:
         print(f"No-data check OK ({len(files)} files checked).")
     return 1 if failed else 0
