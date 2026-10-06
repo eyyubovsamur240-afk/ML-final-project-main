@@ -10,7 +10,8 @@ repos:
       - id: no-commit-to-branch      # work on a branch, merge to main via PR
         args: [--branch, main]
       - id: check-added-large-files
-        args: [--maxkb=5000]
+        args: [--maxkb=5120]           # = MAX_MB in tools/check_no_data.py
+        exclude: (?i)^(report|presentation)/.*\.pdf$   # deliverable PDFs: 25 MB, checked by no-data
       - id: check-merge-conflict
       - id: check-yaml
       - id: check-toml

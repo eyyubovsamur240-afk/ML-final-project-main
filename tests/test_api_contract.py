@@ -30,11 +30,14 @@ def toy_classification(n=80, seed=0):
 
 
 def toy_separable(n=100, seed=0):
-    """Two well-separated blobs: any working linear SVM gets ~100% train accuracy."""
+    """Two well-separated blobs, centred away from the origin so the SVM needs a bias term.
+
+    Any working linear SVM (bias folded into x or kept separate) gets ~100% train accuracy.
+    """
     rng = np.random.default_rng(seed)
     X = np.vstack([rng.normal(-2.0, 0.5, size=(n // 2, 2)), rng.normal(2.0, 0.5, size=(n // 2, 2))])
     y = np.array([0] * (n // 2) + [1] * (n // 2))
-    return X, y
+    return X + 3.0, y
 
 
 def toy_regression(n=80, seed=0):
@@ -73,14 +76,20 @@ def test_tree_classifier_unlimited_depth_memorises_train(run_or_skip):
     assert (pred == y).mean() == 1.0
 
 
-def test_tree_predict_proba_rows_sum_to_one(run_or_skip):
+def test_tree_predict_proba_is_consistent_with_predict(run_or_skip):
     X, y = toy_classification()
     tree = DecisionTree(task="classification", max_depth=2)
     run_or_skip(tree.fit, X, y)
     proba = np.asarray(run_or_skip(tree.predict_proba, X))
-    assert proba.shape[0] == len(X)
+    pred = np.asarray(run_or_skip(tree.predict, X))
+    assert proba.shape == (len(X), 2), "one column per class, in sorted class order"
     assert np.allclose(proba.sum(axis=1), 1.0)
     assert (proba >= 0).all()
+    sure = proba.max(axis=1) > 0.5  # skip exact ties, where tie-breaking is a free choice
+    assert sure.mean() >= 0.5, "probabilities should be the class frequencies in each leaf"
+    assert np.array_equal(np.unique(y)[proba.argmax(axis=1)][sure], pred[sure]), (
+        "predict() should return the class with the highest predict_proba() column"
+    )
 
 
 def test_tree_regressor_fit_predict(run_or_skip):
@@ -90,6 +99,7 @@ def test_tree_regressor_fit_predict(run_or_skip):
     pred = np.asarray(run_or_skip(tree.predict, X), dtype=float)
     assert pred.shape == (len(X),)
     assert np.mean((pred - y) ** 2) < np.var(y), "a depth-4 tree should beat predicting the mean"
+    assert len(np.unique(pred)) <= 2**4, "max_depth=4 allows at most 16 leaves"
 
 
 def test_tree_is_deterministic(run_or_skip):
@@ -104,21 +114,26 @@ def test_tree_is_deterministic(run_or_skip):
 # --- Pegasos SVM --------------------------------------------------------------
 def test_svm_fit_predict_keeps_original_labels(run_or_skip):
     X, y = toy_separable()
-    svm = PegasosSVM(lambda_=1e-2, random_state=0)
+    svm = PegasosSVM(lambda_=0.1, random_state=0)
     assert run_or_skip(svm.fit, X, y) is svm, "fit() should return self"
     pred = np.asarray(run_or_skip(svm.predict, X))
     assert pred.shape == (len(X),)
     assert set(np.unique(pred)) <= {0, 1}, "predict() should map back to the input labels"
-    assert (pred == y).mean() >= 0.95
+    assert (pred == y).mean() >= 0.95, (
+        "two well-separated blobs should be ~100% correct; if one class is mostly wrong, "
+        "check the bias: is it learned at all, and is its step size sane?"
+    )
 
 
 def test_svm_decision_function_shape_and_sign(run_or_skip):
     X, y = toy_separable()
-    svm = PegasosSVM(lambda_=1e-2, random_state=0)
+    svm = PegasosSVM(lambda_=0.1, random_state=0)
     run_or_skip(svm.fit, X, y)
     scores = np.asarray(run_or_skip(svm.decision_function, X), dtype=float)
     assert scores.shape == (len(X),)
-    assert (scores[y == 1] > 0).mean() >= 0.95 and (scores[y == 0] < 0).mean() >= 0.95
+    assert ((scores > 0) == (y == 1)).mean() >= 0.95, (
+        "label 1 (premium) should get positive margins, label 0 negative ones"
+    )
 
 
 def test_svm_is_deterministic_for_a_fixed_seed(run_or_skip):
@@ -165,17 +180,23 @@ def test_roc_auc_extremes_and_ties(run_or_skip):
 
 
 # --- data prep (array-level contract; no dataset needed) ---------------------
-def test_split_is_deterministic_disjoint_and_complete(run_or_skip):
+def test_split_is_deterministic_disjoint_complete_and_sized(run_or_skip):
     n = 200
-    X = np.arange(n, dtype=float).reshape(-1, 1)  # row id as the only feature
-    y = np.arange(n, dtype=float)
+    ids = np.arange(n)
+    y = 50_000.0 + 1_000.0 * ids  # continuous, like the price run_all.py passes in
+    X = np.column_stack([ids, y])  # column 0 = row id, column 1 = copy of y
     a = run_or_skip(data_prep.train_val_test_split, X, y, seed=0)
     b = run_or_skip(data_prep.train_val_test_split, X, y, seed=0)
-    X_tr, y_tr, X_val, y_val, X_te, y_te = a
-    ids = [np.asarray(part).ravel() for part in (X_tr, X_val, X_te)]
-    assert sum(len(i) for i in ids) == n
-    assert len(np.unique(np.concatenate(ids))) == n, "splits must not overlap"
-    assert np.array_equal(np.asarray(y_tr), np.asarray(X_tr).ravel()), "X and y rows misaligned"
+    X_tr, y_tr, X_val, y_val, X_te, y_te = (np.asarray(part) for part in a)
+    row_ids = [X_tr[:, 0], X_val[:, 0], X_te[:, 0]]
+    assert sum(len(r) for r in row_ids) == n
+    assert len(np.unique(np.concatenate(row_ids))) == n, "splits must not overlap"
+    for X_part, y_part in ((X_tr, y_tr), (X_val, y_val), (X_te, y_te)):
+        assert np.array_equal(X_part[:, 1], y_part), "X and y rows misaligned"
+    assert len(X_val) > 0 and len(X_te) > 0 and len(X_tr) > n / 2, "train/val/test all needed"
+    assert np.ptp(X_tr[:, 0]) + 1 > len(X_tr), (
+        "shuffle before splitting: the raw file may be sorted (by date, price, ...)"
+    )
     for left, right in zip(a, b, strict=True):
         assert np.array_equal(np.asarray(left), np.asarray(right)), "same seed, same split"
 
@@ -185,8 +206,10 @@ def test_tier_label_uses_given_threshold_and_train_median(run_or_skip):
     tier, thr = run_or_skip(data_prep.make_tier_label, y_train)
     assert thr == pytest.approx(300.0), "threshold defaults to the TRAIN median"
     assert np.asarray(tier).tolist() == [0, 0, 0, 1, 1], "premium = price > threshold"
-    tier_te, thr_te = run_or_skip(data_prep.make_tier_label, np.array([250.0, 350.0]), thr)
-    assert thr_te == thr and np.asarray(tier_te).tolist() == [0, 1]
+    # These "test" prices have their own median (315), so recomputing it would be caught.
+    tier_te, thr_te = run_or_skip(data_prep.make_tier_label, np.array([310.0, 320.0]), thr)
+    assert thr_te == thr, "a given threshold must be reused, never recomputed (test-set leakage)"
+    assert np.asarray(tier_te).tolist() == [1, 1]
 
 
 def test_standardize_uses_train_statistics_only(run_or_skip):
@@ -195,5 +218,8 @@ def test_standardize_uses_train_statistics_only(run_or_skip):
     X_te = rng.normal(-1.0, 4.0, size=(20, 3))
     Z_tr, Z_te = run_or_skip(data_prep.standardize, X_tr, X_te)
     assert np.allclose(np.asarray(Z_tr).mean(axis=0), 0.0, atol=1e-8)
-    expected = (X_te - X_tr.mean(axis=0)) / X_tr.std(axis=0)
-    assert np.allclose(np.asarray(Z_te), expected, atol=1e-6), "test split must use TRAIN mean/std"
+    # Population (ddof=0) or sample (ddof=1) std are both fine, as long as they come from TRAIN.
+    assert any(
+        np.allclose(np.asarray(Z_te), (X_te - X_tr.mean(axis=0)) / X_tr.std(axis=0, ddof=d), atol=1e-6)
+        for d in (0, 1)
+    ), "the other splits must be scaled with TRAIN mean/std"

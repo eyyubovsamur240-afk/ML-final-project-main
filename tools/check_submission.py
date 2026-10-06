@@ -5,7 +5,8 @@ Looks for the things the project statement penalises that a script can see:
   - leftover template text in report/report.tex,
   - an unfilled contribution_report.md,
   - unpinned dependencies in requirements.txt,
-  - TODO stubs (NotImplementedError) still left in src/,
+  - TODO stubs (`raise NotImplementedError("TODO ...")`) still left in src/,
+  - no results table in the report,
   - no slides PDF in presentation/ (warning only: the PDF is also on Moodle).
 
 Run from the repo root:
@@ -28,22 +29,44 @@ ROOT = Path(__file__).resolve().parent.parent
 REPORT_TEMPLATE_MARKERS = [
     "Your Project Title Here",
     "A Clear, Specific Subtitle",
-    "Aliyeva, Aysel",
+    r"Aliyeva, Aysel\quad Mammadov, Murad",
     "github.com/your-team/your-repo",
+    "One paragraph, roughly 150--250 words",
     "Write it last.",
     "Motivate the problem and state your contributions",
     "Briefly place your work in context",
     "Describe the bina.az dataset: size, key columns",
+    "Describe your impurity criteria",
+    "State the objective and the Pegasos update you implemented",
+    "Explain the learning-rate schedule",
+    "hyperparameter search protocol, seeds, and the",
+    "Lead with a results table; back every claim",
     "Replace with a figure",
     "One clear figure beats ten decorative ones",
-    "Lead with a results table; back every claim",
+    "Where and why each model fails",
     "One short paragraph: what you found and what you would do next.",
+    "Disclose any AI-assistant use",
 ]
 CONTRIB_TEMPLATE_MARKERS = [
     "**Surname, Name —**",
     "2–4 sentences: what you designed",
-    "| ---    | ---       |",
 ]
+DASH_ROW = re.compile(r"^\s*\|(\s*-{3,}\s*\|)+\s*$")  # | --- | --- |  (any spacing)
+
+
+def _unfilled_rows(text: str) -> int:
+    """Table rows made only of `---` cells, not counting each table's header separator."""
+    lines = text.splitlines()
+    count = 0
+    for i, line in enumerate(lines):
+        if not DASH_ROW.match(line):
+            continue
+        header_above = i > 0 and lines[i - 1].lstrip().startswith("|") and not (
+            i > 1 and lines[i - 2].lstrip().startswith("|")
+        )
+        if not header_above:  # the separator sits right under the table's first row
+            count += 1
+    return count
 
 
 def check() -> tuple[list[str], list[str]]:
@@ -61,16 +84,22 @@ def check() -> tuple[list[str], list[str]]:
             )
         placeholders = len(re.findall(r"&\s*---", tex))
         if placeholders:
-            errors.append(f"`report/report.tex` has {placeholders} table cells still set to `---`")
+            errors.append(
+                f"`report/report.tex` has {placeholders} table cells still set to `---` "
+                "(write n/a for cells that don't apply, as the template does)"
+            )
+        if not re.search(r"\\label\{tab:(?!data\})[^}]*\}", tex):
+            warnings.append(
+                "`report/report.tex`: no results table found (no `\\label{tab:...}` "
+                "besides the dataset table) — a results table is required"
+            )
     else:
         errors.append("`report/report.tex` is missing")
 
     contrib = ROOT / "contribution_report.md"
     if contrib.exists():
         text = contrib.read_text(encoding="utf-8")
-        if any(m in text for m in CONTRIB_TEMPLATE_MARKERS) or re.search(
-            r"^\|\s*---\s*\|\s*---\s*\|\s*---\s*\|\s*$", text, re.M
-        ):
+        if any(m in text for m in CONTRIB_TEMPLATE_MARKERS) or _unfilled_rows(text):
             errors.append("`contribution_report.md` still has unfilled template rows")
     else:
         errors.append("`contribution_report.md` is missing from the repo root")
@@ -87,13 +116,22 @@ def check() -> tuple[list[str], list[str]]:
     else:
         errors.append("`requirements.txt` is missing")
 
-    stubs = []
+    stubs, deliberate = [], []
     for py in sorted((ROOT / "src").glob("**/*.py")):
-        n = py.read_text(encoding="utf-8").count("raise NotImplementedError")
-        if n:
-            stubs.append(f"{py.relative_to(ROOT).as_posix()} ({n})")
+        code = py.read_text(encoding="utf-8")
+        todo = len(re.findall(r"raise NotImplementedError\(\s*[\'\"]TODO", code))
+        other = code.count("raise NotImplementedError") - todo
+        rel = py.relative_to(ROOT).as_posix()
+        if todo:
+            stubs.append(f"{rel} ({todo})")
+        if other:
+            deliberate.append(f"{rel} ({other})")
     if stubs:
         errors.append(f"unimplemented TODO stubs left in: {', '.join(stubs)}")
+    if deliberate:
+        warnings.append(
+            f"other `raise NotImplementedError` in: {', '.join(deliberate)} — deliberate?"
+        )
 
     if not list((ROOT / "presentation").glob("*.pdf")):
         warnings.append("no slides PDF in `presentation/` yet")
@@ -106,6 +144,9 @@ def check() -> tuple[list[str], list[str]]:
 
 
 def main(argv: list[str]) -> int:
+    for stream in (sys.stdout, sys.stderr):  # emoji below; Windows consoles default to cp1252
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
     warn_only = "--warn-only" in argv
     errors, warnings = check()
     in_ci = os.environ.get("GITHUB_ACTIONS") == "true"
