@@ -50,9 +50,23 @@ REPORT_TEMPLATE_MARKERS = [
 CONTRIB_TEMPLATE_MARKERS = [
     "**Surname, Name —**",
     "2–4 sentences: what you designed",
-    "| ---                    | ---           | ---                   |",
-    "| ---    | ---       |",
 ]
+DASH_ROW = re.compile(r"^\s*\|(\s*-{3,}\s*\|)+\s*$")  # | --- | --- |  (any spacing)
+
+
+def _unfilled_rows(text: str) -> int:
+    """Table rows made only of `---` cells, not counting each table's header separator."""
+    lines = text.splitlines()
+    count = 0
+    for i, line in enumerate(lines):
+        if not DASH_ROW.match(line):
+            continue
+        header_above = i > 0 and lines[i - 1].lstrip().startswith("|") and not (
+            i > 1 and lines[i - 2].lstrip().startswith("|")
+        )
+        if not header_above:  # the separator sits right under the table's first row
+            count += 1
+    return count
 
 
 def check() -> tuple[list[str], list[str]]:
@@ -74,15 +88,18 @@ def check() -> tuple[list[str], list[str]]:
                 f"`report/report.tex` has {placeholders} table cells still set to `---` "
                 "(write n/a for cells that don't apply, as the template does)"
             )
-        if r"\label{tab:results}" not in tex:
-            errors.append("`report/report.tex` has no results table (`\\label{tab:results}`)")
+        if not re.search(r"\\label\{tab:(?!data\})[^}]*\}", tex):
+            warnings.append(
+                "`report/report.tex`: no results table found (no `\\label{tab:...}` "
+                "besides the dataset table) — a results table is required"
+            )
     else:
         errors.append("`report/report.tex` is missing")
 
     contrib = ROOT / "contribution_report.md"
     if contrib.exists():
         text = contrib.read_text(encoding="utf-8")
-        if any(m in text for m in CONTRIB_TEMPLATE_MARKERS):
+        if any(m in text for m in CONTRIB_TEMPLATE_MARKERS) or _unfilled_rows(text):
             errors.append("`contribution_report.md` still has unfilled template rows")
     else:
         errors.append("`contribution_report.md` is missing from the repo root")

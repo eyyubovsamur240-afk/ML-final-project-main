@@ -135,7 +135,7 @@ Every PR and every push to `main` runs these GitHub Actions workflows (`.github/
 | **Lint & repo rules**: no data | no dataset, archives or model dumps; no file over 5 MB (25 MB for the report/slides PDFs) | "do not commit the raw archive" |
 | **Lint & repo rules**: ruff | real bugs (undefined names, syntax errors), not style | — |
 | **Tests** | `pytest` on Python 3.11 with the pinned requirements | "clean, tested fit/predict" |
-| Submission readiness *(info only)* | template text left in the report, empty contribution report, unpinned deps, TODO stubs | "Leftover template text", "missing contribution report" |
+| Submission readiness *(info only)* | template text left in the report, no results table, empty contribution report, unpinned deps, TODO stubs | "Leftover template text", "missing contribution report" |
 | Contribution summary *(on `main`)* | commits per author, shown on the run's Summary page | "under-contribution … by Git history" |
 | Report PDF *(when `report/` changes)* | `report.tex` compiles; the PDF can be downloaded from the run's **Artifacts** | — |
 
@@ -206,7 +206,9 @@ Record decisions (e.g. "we drop `unit_price` because …") in the issue or PR, s
   (`git add -f report/figures/<name>.pdf`) so the report compiles for everyone and in CI.
 - Keep `contribution_report.md` **current every week**, not only at the end. It must match Git history
   (CI's contribution summary helps you check). Claims that contradict Git history are treated as an integrity issue.
-  Each member edits only **their own** row and paragraph, in one small PR per week, so these edits don't conflict.
+  Each member edits only **their own** row and paragraph, in one small PR per week. Table rows sit on
+  neighbouring lines, so two open contribution PRs will conflict: merge them one after another
+  (pull `main` first), or resolve by keeping both rows (see "Merge conflict?" in §2).
 - The report must include an **AI-assistance disclosure**. Note as you go where you used AI tools and for what.
   Whatever you use, you must understand and be able to explain the code.
 

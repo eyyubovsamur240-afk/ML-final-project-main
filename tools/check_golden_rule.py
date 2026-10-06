@@ -61,24 +61,40 @@ STDLIB = set(sys.stdlib_module_names)
 OWN_PACKAGE = "src"
 
 
-def _own_targets(node: ast.Import | ast.ImportFrom, alias: ast.alias) -> list[Path] | None:
-    """Files of our own package that this import pulls in, or None if it is not our package."""
+def _module_files(base: Path, parts: list[str]) -> list[Path]:
+    """Files Python runs to import base/<parts>: packages on the way, then the module."""
+    files, cur = [], base
+    for i, part in enumerate(parts):
+        if i > 0 and (cur / "__init__.py").is_file():
+            files.append(cur / "__init__.py")
+        cur = cur / part
+    if cur.with_suffix(".py").is_file():
+        files.append(cur.with_suffix(".py"))
+    elif (cur / "__init__.py").is_file():
+        files.append(cur / "__init__.py")
+    return files
+
+
+def _own_targets(node: ast.Import | ast.ImportFrom, alias: ast.alias,
+                 importer: Path) -> list[Path] | None:
+    """Files of our own package that this import runs, or None if it is not our package."""
     if isinstance(node, ast.ImportFrom):
-        own = node.level > 0 or (node.module or "").split(".")[0] == OWN_PACKAGE
-        if not own:
-            return None
         parts = [p for p in (node.module or "").split(".") if p]
-        if node.level == 0:
-            parts = parts[1:]  # drop the leading "src"
-        # `from . import evaluate` / `from src import evaluate`: the alias is the module
-        candidates = [parts + [alias.name], parts] if parts else [[alias.name]]
-    else:
-        parts = alias.name.split(".")
-        if parts[0] != OWN_PACKAGE:
+        if node.level > 0:  # relative: resolved from the importing file's package
+            base = importer.parent
+            for _ in range(node.level - 1):
+                base = base.parent
+        elif parts and parts[0] == OWN_PACKAGE:
+            base, parts = SRC, parts[1:]
+        else:
             return None
-        candidates = [parts[1:]]
-    files = [SRC.joinpath(*c).with_suffix(".py") for c in candidates if c]
-    return [f for f in files if f.is_file()][:1]
+        files = _module_files(base, parts) if parts else []
+        # `from . import evaluate` / `from .pkg import mod`: the name may be a module too
+        return files + [f for f in _module_files(base, parts + [alias.name]) if f not in files]
+    parts = alias.name.split(".")
+    if parts[0] != OWN_PACKAGE:
+        return None
+    return _module_files(SRC, parts[1:]) if len(parts) > 1 else []
 
 
 def find_violations(path: Path, _seen: set[Path] | None = None,
@@ -92,7 +108,7 @@ def find_violations(path: Path, _seen: set[Path] | None = None,
     seen = _seen if _seen is not None else set()
     seen.add(path.resolve())
     try:
-        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        tree = ast.parse(path.read_bytes(), filename=str(path))  # bytes: BOM/coding cookie OK
     except SyntaxError as exc:
         return [(exc.lineno or 0, f"syntax error ({exc.msg}); fix it first")]
 
@@ -112,7 +128,7 @@ def find_violations(path: Path, _seen: set[Path] | None = None,
     for node in ast.walk(tree):
         if isinstance(node, (ast.Import, ast.ImportFrom)):
             for alias in node.names:
-                targets = _own_targets(node, alias)
+                targets = _own_targets(node, alias, path)
                 if targets is None:
                     if isinstance(node, ast.ImportFrom):  # one check per `from X import a, b`
                         check_module(node.lineno, node.module or "", [a.name for a in node.names])
@@ -153,7 +169,7 @@ def main(argv: list[str]) -> int:
             continue
         for line, msg in find_violations(path):
             failed = True
-            text = msg if msg.startswith("syntax error") else (
+            text = msg if "syntax error" in msg else (
                 f"{msg}. Golden rule: the decision tree and the SVM must be your own "
                 "NumPy code (scikit-learn is for the baselines only)."
             )

@@ -194,7 +194,7 @@ def test_split_is_deterministic_disjoint_complete_and_sized(run_or_skip):
     for X_part, y_part in ((X_tr, y_tr), (X_val, y_val), (X_te, y_te)):
         assert np.array_equal(X_part[:, 1], y_part), "X and y rows misaligned"
     assert len(X_val) > 0 and len(X_te) > 0 and len(X_tr) > n / 2, "train/val/test all needed"
-    assert not np.array_equal(np.sort(X_tr[:, 0]), np.arange(len(X_tr))), (
+    assert np.ptp(X_tr[:, 0]) + 1 > len(X_tr), (
         "shuffle before splitting: the raw file may be sorted (by date, price, ...)"
     )
     for left, right in zip(a, b, strict=True):

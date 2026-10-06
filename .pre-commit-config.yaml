@@ -11,7 +11,7 @@ repos:
         args: [--branch, main]
       - id: check-added-large-files
         args: [--maxkb=5120]           # = MAX_MB in tools/check_no_data.py
-        exclude: ^(report|presentation)/.*\.pdf$   # deliverable PDFs: 25 MB, checked by no-data
+        exclude: (?i)^(report|presentation)/.*\.pdf$   # deliverable PDFs: 25 MB, checked by no-data
       - id: check-merge-conflict
       - id: check-yaml
       - id: check-toml
