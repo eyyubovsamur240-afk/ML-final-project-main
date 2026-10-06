@@ -1,0 +1,42 @@
+name: Task
+description: A piece of project work for one owner (code, experiment, report section, slides)
+labels: ["task"]
+body:
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - "P1 Data, cleaning, EDA"
+        - "P2 Decision tree"
+        - "P3 SVM (Pegasos)"
+        - "P4 Tuning & studies"
+        - "P5 Benchmark vs scikit-learn"
+        - "P6 Evaluation & error analysis"
+        - "P7 Reproducibility / repo"
+        - "Report"
+        - "Slides / demo"
+        - "Bonus (P8–P10)"
+    validations:
+      required: true
+  - type: textarea
+    id: goal
+    attributes:
+      label: Goal
+      description: What should exist when this is done?
+    validations:
+      required: true
+  - type: textarea
+    id: done
+    attributes:
+      label: Done when
+      description: Concrete, checkable criteria.
+      value: |
+        - [ ] 
+        - [ ] Tests / evidence
+        - [ ] Reviewed and merged
+  - type: input
+    id: due
+    attributes:
+      label: Target date
+      placeholder: "e.g. Sun 11 Oct"

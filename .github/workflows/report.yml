@@ -1,0 +1,61 @@
+# Compiles report/report.tex (and presentation/slides.tex if you add one)
+# whenever they change, and attaches the PDFs to the run as a download.
+# Open the run → "Artifacts" → report-pdf.
+name: Report PDF
+
+on:
+  pull_request:
+    paths: ["report/**", "presentation/**", ".github/workflows/report.yml"]
+  push:
+    branches: [main]
+    paths: ["report/**", "presentation/**", ".github/workflows/report.yml"]
+  workflow_dispatch:
+  workflow_call:        # reused by release.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: report-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  build:
+    name: Build report PDF
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install LaTeX (only the packages the template needs)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends \
+            texlive-latex-base texlive-latex-recommended \
+            texlive-latex-extra texlive-fonts-recommended > /dev/null
+      - name: Build report/report.pdf
+        working-directory: report
+        run: |
+          # Two passes so cross-references and citations resolve.
+          for pass in 1 2; do
+            if ! pdflatex -interaction=nonstopmode -halt-on-error report.tex > /dev/null; then
+              echo "::error file=report/report.tex::LaTeX failed — last lines of report.log:"
+              tail -n 40 report.log
+              exit 1
+            fi
+          done
+      - name: Build presentation/slides.pdf (only if slides.tex exists)
+        if: hashFiles('presentation/slides.tex') != ''
+        working-directory: presentation
+        run: |
+          for pass in 1 2; do
+            pdflatex -interaction=nonstopmode -halt-on-error slides.tex > /dev/null \
+              || { tail -n 40 slides.log; exit 1; }
+          done
+      - uses: actions/upload-artifact@v7
+        with:
+          name: report-pdf
+          path: |
+            report/report.pdf
+            presentation/*.pdf
+          if-no-files-found: error
+          retention-days: 30

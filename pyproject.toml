@@ -1,0 +1,19 @@
+# Tool configuration only (this repo is not an installable package).
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+# -ra lists every skipped test with its reason, i.e. what is still a TODO.
+addopts = "-ra"
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+extend-exclude = ["report", "presentation"]
+
+[tool.ruff.lint]
+# Real bugs only (syntax errors, undefined names, bugbear) — no style nitpicks.
+select = ["E4", "E7", "E9", "F", "B"]
+# The starter skeleton imports numpy before any code uses it.
+# Once the TODOs are filled in, delete this line to catch unused imports again.
+ignore = ["F401"]

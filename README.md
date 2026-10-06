@@ -61,3 +61,13 @@ pip install -r requirements.txt
 # put the dataset in data/ (see data/README.md), then:
 python -m src.run_all
 ```
+
+## Team workflow
+How we branch, review, test and submit: **[CONTRIBUTING.md](CONTRIBUTING.md)**.
+In short: branch → PR → green CI + one teammate's approval → squash-merge.
+
+```bash
+pip install -r requirements.txt -r requirements-dev.txt   # Python 3.11
+python -m pytest                                          # tests (skipped = still TODO)
+python tools/check_submission.py --warn-only              # what's left before v1.0-final
+```

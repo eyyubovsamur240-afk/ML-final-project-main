@@ -1,0 +1,13 @@
+# CODEOWNERS: GitHub automatically requests a review from the owner of the
+# files a pull request touches. Fill in your teammates' GitHub handles once
+# you have split the work, then uncomment. Last matching line wins.
+# List the person who should REVIEW each module — ideally NOT its main
+# author, so every piece of code is understood by at least two people
+# (at the demo, every member must be able to explain any part).
+#
+# *                     @eyyubovsamur240-afk
+# /src/data_prep.py     @teammate-1
+# /src/decision_tree.py @teammate-2
+# /src/svm.py           @teammate-3
+# /src/evaluate.py      @teammate-1
+# /report/              @teammate-2 @teammate-3

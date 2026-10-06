@@ -1,0 +1,10 @@
+# Normalise line endings so Windows and macOS/Linux teammates don't
+# produce whole-file diffs (and merge conflicts) just from CRLF vs LF.
+* text=auto eol=lf
+
+# Binary files: never touch, never diff as text.
+*.pdf binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.zip binary

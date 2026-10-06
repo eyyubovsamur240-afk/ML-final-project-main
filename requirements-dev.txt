@@ -1,0 +1,5 @@
+# Development tools (CI installs these on top of requirements.txt).
+#   pip install -r requirements.txt -r requirements-dev.txt
+pytest==8.4.2
+ruff==0.16.8      # keep in sync with the rev in .pre-commit-config.yaml
+pre-commit==4.3.0

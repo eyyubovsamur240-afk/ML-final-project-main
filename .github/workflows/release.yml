@@ -1,0 +1,63 @@
+# Publishing a version: push a tag that starts with "v", e.g.
+#   git tag -a v1.0-final -m "Final submission" && git push origin v1.0-final
+# This re-runs CI, builds the report PDF, runs the STRICT submission check
+# (no template text, contribution report filled in, deps pinned, no TODO
+# stubs) and, only if all pass, creates a GitHub Release with the PDFs.
+# If something fails, fix it on main, delete the tag and tag again (before
+# the deadline!) — see CONTRIBUTING.md → Submitting.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    uses: ./.github/workflows/ci.yml
+
+  report:
+    uses: ./.github/workflows/report.yml
+
+  readiness:
+    name: Submission readiness (strict)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version-file: .python-version
+      - name: Fail on template leftovers / missing deliverables
+        run: |
+          set -o pipefail
+          python tools/check_submission.py | tee -a "$GITHUB_STEP_SUMMARY"
+
+  publish:
+    name: Publish GitHub Release
+    needs: [ci, report, readiness]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write     # needed to create the release
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: report-pdf
+          path: dist
+      - name: Create (or update) the release for ${{ github.ref_name }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          shopt -s globstar nullglob
+          files=(dist/**/*.pdf)
+          echo "Attaching: ${files[*]}"
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            gh release upload "$TAG" "${files[@]}" --clobber --repo "$GITHUB_REPOSITORY"
+          else
+            gh release create "$TAG" "${files[@]}" --repo "$GITHUB_REPOSITORY" \
+              --title "$TAG" --generate-notes --verify-tag
+          fi

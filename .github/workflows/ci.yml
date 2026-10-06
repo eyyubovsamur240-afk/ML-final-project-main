@@ -1,0 +1,81 @@
+# Runs on every pull request and every push to main.
+# The two jobs "Lint & repo rules" and "Tests" are the ones to mark as
+# *required* in the main-branch ruleset (see CONTRIBUTING.md → Repo settings).
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+  workflow_call:        # reused by release.yml before publishing a tag
+
+permissions:
+  contents: read
+
+concurrency:
+  # A newer push to the same PR cancels the older, now-pointless run.
+  group: ci-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  guards:
+    name: Lint & repo rules
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version-file: .python-version
+      - name: Golden rule — tree and SVM use only NumPy + stdlib
+        run: python tools/check_golden_rule.py
+      - name: No dataset or large files committed
+        run: python tools/check_no_data.py
+      - name: Ruff lint (real bugs only, no style nitpicks)
+        run: |
+          python -m pip install --quiet "$(grep -E '^ruff==' requirements-dev.txt | cut -d' ' -f1)"
+          ruff check --output-format=github .
+
+  tests:
+    name: Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version-file: .python-version
+          cache: pip
+          cache-dependency-path: requirements*.txt
+      - name: Install pinned dependencies
+        run: python -m pip install -r requirements.txt -r requirements-dev.txt
+      - name: Run tests (skipped = still a TODO stub)
+        run: python -m pytest
+
+  readiness:
+    name: Submission readiness (info)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version-file: .python-version
+      - name: Check for template leftovers and missing deliverables
+        run: python tools/check_submission.py --warn-only >> "$GITHUB_STEP_SUMMARY"
+
+  contributions:
+    name: Contribution summary
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0          # full history, not just the last commit
+      - uses: actions/setup-python@v7
+        with:
+          python-version-file: .python-version
+      - name: Commits per author (shown on the run's Summary page)
+        run: python tools/contrib_stats.py >> "$GITHUB_STEP_SUMMARY"

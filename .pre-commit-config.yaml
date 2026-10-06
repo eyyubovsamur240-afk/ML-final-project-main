@@ -1,0 +1,35 @@
+# Local checks that run on `git commit` — the same rules CI enforces, but
+# caught before you push. One-time setup per clone:
+#   pip install -r requirements-dev.txt
+#   pre-commit install
+# Run on everything manually: pre-commit run --all-files
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: no-commit-to-branch      # work on a branch, merge to main via PR
+        args: [--branch, main]
+      - id: check-added-large-files
+        args: [--maxkb=5000]
+      - id: check-merge-conflict
+      - id: check-yaml
+      - id: check-toml
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.16.8                     # keep in sync with requirements-dev.txt
+    hooks:
+      - id: ruff-check
+        args: [--fix]
+
+  - repo: local
+    hooks:
+      - id: golden-rule
+        name: golden rule (tree & SVM use only NumPy)
+        entry: python tools/check_golden_rule.py
+        language: python
+        pass_filenames: false
+        files: ^src/.*\.py$
+      - id: no-data
+        name: no dataset / large files in Git
+        entry: python tools/check_no_data.py
+        language: python
