@@ -11,7 +11,7 @@ Kaggle: **"binaaz-sale-project"** by `sehriyarmemmedli`
 1. Download the dataset archive from Kaggle.
 2. Extract it so the CSV lives **directly in this folder**, e.g.:
    ```
-   data/bina_az_sale.csv
+   data/house_sale.csv
    ```
 3. If your filename differs, set the path once at the top of
    `src/data_prep.py` (the `DATA_PATH` constant) — do not scatter paths
