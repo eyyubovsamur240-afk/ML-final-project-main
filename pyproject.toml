@@ -5,6 +5,12 @@ testpaths = ["tests"]
 pythonpath = ["."]
 # -ra lists every skipped test with its reason, i.e. what is still a TODO.
 addopts = "-ra"
+# matplotlib 3.8 (pinned) calls pyparsing APIs that newer pyparsing versions deprecate.
+filterwarnings = [
+    "ignore::DeprecationWarning:matplotlib._fontconfig_pattern",
+    "ignore::DeprecationWarning:matplotlib._mathtext",
+    "ignore::DeprecationWarning:pyparsing.util",
+]
 
 [tool.ruff]
 target-version = "py311"

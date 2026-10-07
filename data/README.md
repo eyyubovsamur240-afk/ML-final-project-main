@@ -9,10 +9,12 @@ Kaggle: **"binaaz-sale-project"** by `sehriyarmemmedli`
 
 ## How to place it
 1. Download the dataset archive from Kaggle.
-2. Extract it so the CSV lives **directly in this folder**, e.g.:
+2. Extract it so the CSV lives **directly in this folder**:
    ```
-   data/bina_az_sale.csv
+   data/house_sale.csv
    ```
+   (`house_sale.csv` is the file inside the Kaggle archive: about 100,775 rows, 51 columns.)
+   With the Kaggle API: `kaggle datasets download -d sehriyarmemmedli/binaaz-sale-project -p data --unzip`
 3. If your filename differs, set the path once at the top of
    `src/data_prep.py` (the `DATA_PATH` constant) — do not scatter paths
    across the codebase.

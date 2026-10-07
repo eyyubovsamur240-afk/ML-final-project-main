@@ -1,12 +1,32 @@
+"""
+data_prep.py — loading, cleaning, leakage-free splitting and encoding of the bina.az data.
+
+Pipeline: load_raw -> clean -> split_data (70/15/15, price-tier threshold from TRAIN)
+-> FeatureEncoder (fitted on TRAIN) -> standardize (TRAIN statistics). Everything is
+NumPy/pandas: scikit-learn is kept for the baselines only, as the brief requires.
+
+Most callers only need:
+    load_splits(task="regression" | "classification", scaled=False)
+Command-line summary of the cleaning and the split:
+    python -m src.data_prep --data data/house_sale.csv
+"""
+
+from __future__ import annotations
+
 import argparse
+
 import numpy as np
 import pandas as pd
-from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import StandardScaler
 
 # Configuration
-RANDOM_STATE = 42
-DEFAULT_DATA_PATH = "data/house_sale.csv"
+SEED = 42
+RANDOM_STATE = SEED
+DATA_PATH = "data/house_sale.csv"  # the CSV inside the Kaggle archive, see data/README.md
+DEFAULT_DATA_PATH = DATA_PATH
+
+# Columns that LEAK the target (arithmetic functions of price). They are never selected
+# as features (build_clean_table keeps a whitelist); listed here for the report.
+LEAKAGE_COLUMNS = ["unit_price", "total_price"]
 
 # Property categories (values of the 'Kateqoriya' column)
 RESIDENTIAL = ["Yeni tikili", "Köhnə tikili", "Həyət evi/Bağ evi"]  # new build, old stock, house
@@ -184,9 +204,19 @@ def add_location_features(clean: pd.DataFrame) -> pd.DataFrame:
 
 
 def clean_data(path: str = DEFAULT_DATA_PATH):
-    """Run the full cleaning process and return the cleaned data and logs."""
+    """Load the raw CSV and run the full cleaning process; return the cleaned data and logs."""
+    return clean_with_logs(load_raw(path))
+
+
+def clean(df: pd.DataFrame) -> pd.DataFrame:
+    """Clean a raw DataFrame (see clean_with_logs); return only the cleaned table."""
+    return clean_with_logs(df)[0]
+
+
+def clean_with_logs(df: pd.DataFrame):
+    """Run the full cleaning process on a raw DataFrame.
+    Return (clean, cleaning_log, outlier_log)."""
     steps = []
-    df = load_raw(path)
     steps.append(("Raw data", 0, len(df)))
     n = len(df)
     df = remove_repeated_scrapes(df)
@@ -215,17 +245,63 @@ def clean_data(path: str = DEFAULT_DATA_PATH):
     return clean, cleaning_log, outlier_log
 
 # Leakage-free split and price-tier label
+def make_tier_label(y_price, threshold=None):
+    """Price tier: 1 = premium (price > threshold), 0 = standard.
+    The threshold defaults to the median of the prices given, so call this on the TRAIN
+    prices first and pass the returned threshold for validation/test.
+    Return (tier, threshold)."""
+    prices = np.asarray(y_price, dtype=float)
+    if threshold is None:
+        threshold = float(np.median(prices))
+    return (prices > threshold).astype(int), threshold
+
+
+def stratified_split_indices(labels, test_size: float, rng: np.random.Generator):
+    """Shuffle row indices and split them so every label keeps (about) its share in both
+    parts (all-equal labels give a plain random split). Return (keep_idx, test_idx)."""
+    labels = np.asarray(labels)
+    keep, test = [], []
+    for value in pd.unique(labels):
+        idx = rng.permutation(np.flatnonzero(labels == value))
+        n_test = int(round(len(idx) * test_size))
+        test.append(idx[:n_test])
+        keep.append(idx[n_test:])
+    keep, test = np.concatenate(keep), np.concatenate(test)
+    return rng.permutation(keep), rng.permutation(test)
+
+
+def _rows(data, idx):
+    return data.iloc[idx] if hasattr(data, "iloc") else np.asarray(data)[idx]
+
+
+def train_val_test_split(X, y, val_size=0.15, test_size=0.15, seed=SEED, stratify=None):
+    """Deterministic split into train / validation / test (optionally stratified by the
+    labels in `stratify`). Return (X_tr, y_tr, X_val, y_val, X_te, y_te)."""
+    rng = np.random.default_rng(seed)
+    labels = np.zeros(len(y), dtype=int) if stratify is None else np.asarray(stratify)
+    holdout = val_size + test_size
+    train_idx, hold_idx = stratified_split_indices(labels, holdout, rng)
+    val_pos, test_pos = stratified_split_indices(labels[hold_idx], test_size / holdout, rng)
+    val_idx, test_idx = hold_idx[val_pos], hold_idx[test_pos]
+    return (_rows(X, train_idx), _rows(y, train_idx), _rows(X, val_idx), _rows(y, val_idx),
+            _rows(X, test_idx), _rows(y, test_idx))
+
+
 def split_data(clean: pd.DataFrame, random_state: int = RANDOM_STATE):
     """70 / 15 / 15 split with the price-tier threshold taken from the training split only.
     1. Train (70%) vs holdout (30%), stratified by property category.
     2. Threshold = median price of the TRAINING split; label = 1 if price > threshold.
     3. Holdout -> validation (15%) and test (15%), stratified by the price-tier label.
     """
-    train_df, hold_df = train_test_split(clean, test_size=HOLDOUT_SIZE, stratify=clean["category"], random_state=random_state)
-    threshold = float(train_df["price"].median())
-    train_df = train_df.assign(price_tier=(train_df["price"] > threshold).astype(int))
-    hold_df = hold_df.assign(price_tier=(hold_df["price"] > threshold).astype(int))
-    val_df, test_df = train_test_split(hold_df, test_size=0.50, stratify=hold_df["price_tier"], random_state=random_state)
+    rng = np.random.default_rng(random_state)
+    train_idx, hold_idx = stratified_split_indices(clean["category"], HOLDOUT_SIZE, rng)
+    train_df, hold_df = clean.iloc[train_idx], clean.iloc[hold_idx]
+    train_tier, threshold = make_tier_label(train_df["price"])
+    hold_tier, _ = make_tier_label(hold_df["price"], threshold)
+    train_df = train_df.assign(price_tier=train_tier)
+    hold_df = hold_df.assign(price_tier=hold_tier)
+    val_idx, test_idx = stratified_split_indices(hold_df["price_tier"], 0.50, rng)
+    val_df, test_df = hold_df.iloc[val_idx], hold_df.iloc[test_idx]
 
     # No listing may appear in two splits
     assert set(train_df["listing_id"]).isdisjoint(val_df["listing_id"])
@@ -233,6 +309,21 @@ def split_data(clean: pd.DataFrame, random_state: int = RANDOM_STATE):
     assert set(val_df["listing_id"]).isdisjoint(test_df["listing_id"])
     assert len(train_df) + len(val_df) + len(test_df) == len(clean)
     return train_df, val_df, test_df, threshold
+
+def standardize(X_tr, *others):
+    """Standardize features with TRAIN mean/std only (a constant column becomes 0), then
+    apply the same transform to the other splits. Return the scaled arrays in the same
+    order as given."""
+    mean, std = train_statistics(X_tr)
+    return tuple((np.asarray(X, dtype=float) - mean) / std for X in (X_tr, *others))
+
+
+def train_statistics(X_tr):
+    """Per-feature mean and std of the TRAIN split (std 0 replaced by 1)."""
+    X_tr = np.asarray(X_tr, dtype=float)
+    std = X_tr.std(axis=0)
+    return X_tr.mean(axis=0), np.where(std > 0, std, 1.0)
+
 
 # Encoding (fitted on train only)
 class FeatureEncoder:
@@ -263,7 +354,7 @@ class FeatureEncoder:
 # Public API
 def load_splits(task: str = "regression", scaled: bool = False, data_path: str = DEFAULT_DATA_PATH, random_state: int = RANDOM_STATE) -> dict:
     """Prepare NumPy arrays for regression or classification. Regression uses log(price), classification uses price_tier.
-    If scaled=True, scale the features for SVM. Return train, validation, test data and other useful information."""
+    If scaled=True, standardize the features for the SVM (train statistics). Return train, validation, test data and other useful information."""
     if task not in ("regression", "classification"):
         raise ValueError("task must be 'regression' or 'classification'")
     clean, _, _ = clean_data(data_path)
@@ -273,9 +364,10 @@ def load_splits(task: str = "regression", scaled: bool = False, data_path: str =
     X_val = encoder.transform(val_df).to_numpy(dtype=float)
     X_test = encoder.transform(test_df).to_numpy(dtype=float)
     scaler = None
-    if scaled:
-        scaler = StandardScaler().fit(X_train)
-        X_train, X_val, X_test = scaler.transform(X_train), scaler.transform(X_val), scaler.transform(X_test)
+    if scaled:  # statistics from TRAIN only
+        mean, std = train_statistics(X_train)
+        scaler = {"mean": mean, "std": std}
+        X_train, X_val, X_test = standardize(X_train, X_val, X_test)
     target = "log_price" if task == "regression" else "price_tier"
     return {
         "X_train": X_train, "X_val": X_val, "X_test": X_test,
