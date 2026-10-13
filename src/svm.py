@@ -183,28 +183,28 @@ class PegasosSVM:
         return np.where(self.decision_function(X)<0,self.classes_[0],self.classes_[1]) ##score=0 -> positive class is predicted: same as sklearn
         
 
-if __name__ == "__main__":
-    # --- Test 1: decision_function + predict (hand-set w, b) ---
-    m = PegasosSVM()
-    y_pm, m.classes_ = m._to_pm1(np.array([0, 1, 1, 0]))
-    print(y_pm, m.classes_)             # expect [-1  1  1 -1] [0 1]
-    m.w = np.array([2., 1.]); m.b = -4.
-    X = np.array([[3, 1], [1, 1], [2, 0]])
-    print(m.decision_function(X))      # expect [ 3. -1.  0.]
-    print(m.predict(X))                # expect [1 0 1]
+# if __name__ == "__main__":
+#     # --- Test 1: decision_function + predict (hand-set w, b) ---
+#     m = PegasosSVM()
+#     y_pm, m.classes_ = m._to_pm1(np.array([0, 1, 1, 0]))
+#     print(y_pm, m.classes_)             # expect [-1  1  1 -1] [0 1]
+#     m.w = np.array([2., 1.]); m.b = -4.
+#     X = np.array([[3, 1], [1, 1], [2, 0]])
+#     print(m.decision_function(X))      # expect [ 3. -1.  0.]
+#     print(m.predict(X))                # expect [1 0 1]
 
-    # --- Test 2: objective J by hand ---
-    m = PegasosSVM(lambda_=0.1)
-    m.w = np.array([2., 1.]); m.b = -4.
-    X = np.array([[3, 1], [1, 1], [2, 0], [2, 1]])
-    y_pm = np.array([1, -1, 1, -1])
-    print(m._objective(X, y_pm))       # expect 1.0
+#     # --- Test 2: objective J by hand ---
+#     m = PegasosSVM(lambda_=0.1)
+#     m.w = np.array([2., 1.]); m.b = -4.
+#     X = np.array([[3, 1], [1, 1], [2, 0], [2, 1]])
+#     y_pm = np.array([1, -1, 1, -1])
+#     print(m._objective(X, y_pm))       # expect 1.0
 
-    # --- Test 3: TOY TEST - train on two separated clouds ---
-    rng = np.random.default_rng(0)
-    X_toy = np.vstack([rng.normal(-2, 1, (50, 2)), rng.normal(2, 1, (50, 2))])
-    y_toy = np.array([0]*50 + [1]*50)
-    m = PegasosSVM(lambda_=0.01, n_iters=5000).fit(X_toy, y_toy)
-    print("accuracy:", (m.predict(X_toy) == y_toy).mean())     # expect 1.0
-    print("J first/last:", m.history_[0], m.history_[-1])     # expect ~0.0748 -> ~0.0221
-    print("w, b:", m.w, m.b)      
+#     # --- Test 3: TOY TEST - train on two separated clouds ---
+#     rng = np.random.default_rng(0)
+#     X_toy = np.vstack([rng.normal(-2, 1, (50, 2)), rng.normal(2, 1, (50, 2))])
+#     y_toy = np.array([0]*50 + [1]*50)
+#     m = PegasosSVM(lambda_=0.01, n_iters=5000).fit(X_toy, y_toy)
+#     print("accuracy:", (m.predict(X_toy) == y_toy).mean())     # expect 1.0
+#     print("J first/last:", m.history_[0], m.history_[-1])     # expect ~0.0748 -> ~0.0221
+#     print("w, b:", m.w, m.b)      
