@@ -43,11 +43,17 @@ class PegasosSVM:
         self.random_state = random_state
         self.w = None              # weight vector
         self.b = 0.0               # bias
+        self.classes_=None
+        self.history_=None
 
     @staticmethod
     def _to_pm1(y):
         """Map {0,1} (or any 2-class labels) to {-1, +1}. Store the mapping."""
-        raise NotImplementedError("TODO: encode labels to +/-1")
+        labels=np.unique(y)
+        if len(labels)!=2:
+            raise ValueError("Only two class labels are accepted")
+        updated_y=np.where(y==labels[0],-1,1)
+        return updated_y,labels
 
     def fit(self, X, y):
         """
@@ -55,12 +61,17 @@ class PegasosSVM:
         use eta_t = 1/(lambda*t), and apply the update above.
         Return self.
         """
-        raise NotImplementedError("TODO: Pegasos training loop")
 
+ 
     def decision_function(self, X):
         """Return the signed margin  w . x + b  for each row."""
-        raise NotImplementedError("TODO: decision_function")
+        signed_margins=np.dot(X,self.w)+self.b
+        return signed_margins
+
+    def _objective(self,X,y_pm):
+        raise NotImplementedError("No enough place")
+
 
     def predict(self, X):
         """Return class labels (map sign of decision_function back to your labels)."""
-        raise NotImplementedError("TODO: predict")
+        raise NotImplementedError("Not completed")
