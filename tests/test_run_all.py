@@ -228,6 +228,29 @@ def test_a_failing_eda_module_does_not_lose_the_results(tmp_path, monkeypatch):
     assert (tmp_path / "figures" / "eval_confusion_matrices.pdf").exists()
 
 
+def test_cv_and_timing_fits_get_the_training_matrix_layout():
+    """CV folds and scaling subsets keep the column-major layout of the full split,
+    so their fit times are comparable with the main fit (evaluate.take_rows)."""
+    seen = []
+
+    class Recorder:
+        def fit(self, X, y):
+            seen.append(X.flags.f_contiguous)
+            return self
+
+        def predict(self, X):
+            return np.zeros(len(X))
+
+    data = fake_data()
+    data["X"] = {part: np.asfortranarray(X) for part, X in data["X"].items()}
+    run_all.scaling_study("A", [run_all.ModelSpec("recorder", Recorder)], data, {"recorder"},
+                          repeats=1)
+    run_all.evaluate.cross_validate(Recorder, data["X"]["train"], data["log_price"]["train"],
+                                    lambda m, X, y: {"zero": 0.0}, k=3)
+    assert len(seen) == 5 + 3 and all(seen)
+    assert run_all.subsample_train(data, 100)["X"]["train"].flags.f_contiguous
+
+
 def test_bad_fold_count_is_rejected(monkeypatch):
     monkeypatch.setattr(run_all, "load_data", lambda path, fast=False: fake_data())
     with pytest.raises(SystemExit):

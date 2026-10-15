@@ -26,7 +26,11 @@ FIGURES_DIR = "report/figures"
 def _save(fig, out_dir: str, name: str) -> str:
     os.makedirs(out_dir, exist_ok=True)
     path = os.path.join(out_dir, name)
-    fig.savefig(path, bbox_inches="tight")
+    # bbox_inches="tight" measures an x-axis label only as wide as its panel, so a label
+    # wider than a narrow panel would be cut off at the page edge: count it in full.
+    labels = [ax.xaxis.label for ax in fig.axes if ax.get_visible() and ax.get_xlabel()]
+    fig.savefig(path, bbox_inches="tight",
+                bbox_extra_artists=fig.get_default_bbox_extra_artists() + labels)
     plt.close(fig)
     return path
 
@@ -124,8 +128,8 @@ def importance_bars(tables: dict, value: str = "importance", top: int = 12,
                     name: str = "eval_feature_importance.pdf", xlabel=None) -> str:
     """Horizontal bars, one panel per table ({panel title: DataFrame with "feature" and `value`}).
 
-    xlabel: one axis label for every panel, or a function panel title -> label
-    (panels can have different units, e.g. RMSE for Task A and F1 for Task B).
+    xlabel: one label for the whole figure, or a function panel title -> label for each
+    panel (panels can have different units, e.g. RMSE for Task A and F1 for Task B).
     Panels are laid out in rows of at most three (two for four panels), so the figure
     stays about a page wide however many models there are.
     """
@@ -143,9 +147,10 @@ def importance_bars(tables: dict, value: str = "importance", top: int = 12,
         ax.axvline(0, color="black", lw=0.6)
         ax.set_title(panel, fontsize=9)
         ax.tick_params(axis="y", labelsize=7)
-        label = xlabel(panel) if callable(xlabel) else xlabel
-        if label:
-            ax.set_xlabel(label, fontsize=8)
+        if callable(xlabel):
+            ax.set_xlabel(xlabel(panel), fontsize=8)
+    if xlabel and not callable(xlabel):
+        fig.supxlabel(xlabel, fontsize=8)
     fig.suptitle(title, fontsize=10)
     return _save(fig, out_dir, name)
 

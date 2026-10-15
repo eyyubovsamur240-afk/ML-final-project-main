@@ -687,7 +687,8 @@ def main(argv: list[str] | None = None) -> dict:
             report["eda"] = eda
         eda_failed = isinstance(eda, dict) and eda.get("status") == "failed"
         if eda_failed:
-            print(f"\nWarning: src/eda.py failed, Figures 1-4 not written ({eda['reason']})")
+            print("\nWarning: src/eda.py failed, so Figures 1-4 may be missing or out of date "
+                  f"({eda['reason']})")
     written = write_outputs(report, out_dirs["results"], out_dirs["tables"])
     if not args.no_figures:
         written += make_figures(data, outputs_a, outputs_b, analysis, scaling,
