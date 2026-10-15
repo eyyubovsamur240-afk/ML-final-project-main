@@ -1,9 +1,10 @@
-# MLE-AI-201 Machine Learning — Final Project (Starter Pack)
+# Pricing bina.az listings with a from-scratch decision tree and SVM
 
-Build **two models from scratch** (a decision tree and an SVM) on the
-**bina.az** real-estate dataset, then benchmark honestly against
-scikit-learn. Read the full brief in the project statement PDF handed out
-with this pack.
+Our final project for MLE-AI-201 Machine Learning. On the **bina.az**
+real-estate dataset we predict a listing's sale price (Task A) and whether it
+is premium or standard (Task B) with a decision tree and a Pegasos SVM written
+in NumPy, and benchmark both honestly against scikit-learn. The brief is
+`PROJECT_STATEMENT.pdf`; who did what is in `contribution_report.md`.
 
 - **Released:** Sun 04 Oct 2026
 - **Due:** **Sun 18 Oct 2026, 23:59 (Baku)** — two weeks, no late submissions.
@@ -32,7 +33,7 @@ only. For the SVM you do **not** need a QP/SMO solver — use the
 ```
 .
 ├── README.md               # this file
-├── requirements.txt        # pin your versions
+├── requirements.txt        # pinned versions
 ├── .gitignore
 ├── contribution_report.md  # who did what (keep in repo root)
 ├── data/                   # dataset lives here (not committed — see data/README.md)
@@ -56,10 +57,14 @@ only. For the SVM you do **not** need a QP/SMO solver — use the
 ```
 
 ## Reproducibility (graded)
-- Pin dependencies in `requirements.txt`; fix all random seeds.
-- `python -m src.run_all` must reproduce **every** headline number and
-  figure from a clean checkout.
-- Do **not** commit the raw data archive (see `.gitignore`).
+- The packages we use, and scikit-learn's numeric dependencies, are pinned in
+  `requirements.txt` (Python 3.11).
+- Every random step is seeded (`data_prep.SEED = 42`), and a test
+  (`tests/test_run_all.py`) checks that two runs give identical numbers apart
+  from the timings.
+- `python -m src.run_all` reproduces **every** headline number and figure
+  from a clean checkout (see below).
+- The raw data archive is never committed (see `.gitignore`).
 
 ## Quick start
 ```bash
