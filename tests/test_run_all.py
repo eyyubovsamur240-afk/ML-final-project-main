@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import importlib.machinery
 import json
+import re
 import sys
 import types
 
@@ -217,6 +218,13 @@ def test_run_all_with_stand_in_models_exercises_every_step(tmp_path, monkeypatch
     assert svm_row.count("[") == 2, "test F1 and test AUC both have an interval"
     tex = (tmp_path / "tables" / "timing.tex").read_text(encoding="utf-8")
     assert "CV fit (s)" in tex and "294 rows" in tex
+    for name in ("headline.tex", "task_a.tex", "task_b.tex", "timing.tex"):
+        lines = (tmp_path / "tables" / name).read_text(encoding="utf-8").splitlines()
+        spec = next(line for line in lines if r"\begin{tabular}" in line).split("}{", 1)[1]
+        spec = re.sub(r"@\{(?:[^{}]|\{[^{}]*\})*\}", "", spec)  # drop @{...} spacing groups
+        n_columns = sum(spec.count(c) for c in "lcr")
+        header = lines[lines.index(r"    \toprule") + 1]
+        assert header.count("&") + 1 == n_columns, f"{name}: column spec matches the header"
     assert tex.count("includes evaluating its objective") == 1
     assert "Ours: SVM (Pegasos) includes evaluating its objective on every training row 3 times" \
         in tex

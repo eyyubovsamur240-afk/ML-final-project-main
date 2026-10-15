@@ -599,10 +599,10 @@ def write_outputs(report: dict, results_dir: str, tables_dir: str) -> list[str]:
             align=r"l@{\hspace{8pt}}c@{\hspace{8pt}}c"),  # fits one column of the report
         "task_a.tex": evaluate.latex_table(
             report["tables"]["A"], TABLE_COLUMNS["A"], LATEX_HEADERS["A"], captions["A"],
-            label="tab:task-a", align="lccccc", wide=True),
+            label="tab:task-a", align="l" + "c" * (len(TABLE_COLUMNS["A"]) - 1), wide=True),
         "task_b.tex": evaluate.latex_table(
             report["tables"]["B"], TABLE_COLUMNS["B"], LATEX_HEADERS["B"], captions["B"],
-            label="tab:task-b", align="lcccccc", wide=True),
+            label="tab:task-b", align="l" + "c" * (len(TABLE_COLUMNS["B"]) - 1), wide=True),
         "timing.tex": evaluate.latex_table(
             report["timing"], timing_columns, timing_headers, captions["timing"],
             label="tab:timing", align="ll" + "r" * (len(timing_columns) - 2)),
