@@ -87,18 +87,26 @@ class HalfDoneTree(StandInTree):
 
 
 class StandInSVM:
-    """Full-batch hinge sub-gradient, our SVM's constructor signature (test only)."""
+    """Mini-batch hinge sub-gradient, our SVM's constructor signature (test only).
+
+    The batches are drawn from random_state, like Pegasos' samples, so a run that
+    stopped passing the seed would no longer reproduce its numbers.
+    """
 
     def __init__(self, lambda_=1e-4, n_iters=1_000, random_state=42):
         self.lambda_, self.n_iters = lambda_, min(n_iters, 300)
+        self.random_state = random_state
 
     def fit(self, X, y):
+        rng = np.random.default_rng(self.random_state)
         y_pm = np.where(np.asarray(y) == 1, 1.0, -1.0)
         Xa = np.hstack([X, np.ones((len(X), 1))])
         w = np.zeros(Xa.shape[1])
         for t in range(1, self.n_iters + 1):
-            active = y_pm * (Xa @ w) < 1
-            grad = self.lambda_ * w - (y_pm[active, None] * Xa[active]).sum(0) / len(X)
+            batch = rng.choice(len(Xa), size=max(1, len(Xa) // 2), replace=False)
+            Xb, yb = Xa[batch], y_pm[batch]
+            active = yb * (Xb @ w) < 1
+            grad = self.lambda_ * w - (yb[active, None] * Xb[active]).sum(0) / len(Xb)
             w -= grad / (self.lambda_ * t + 10)
         self.w, self.b = w[:-1], w[-1]
         return self
@@ -110,8 +118,14 @@ class StandInSVM:
         return (self.decision_function(X) >= 0).astype(int)
 
 
+def _fake_load_data(path, fast=False):
+    """load_data on the synthetic set; --fast subsamples it like the real 3,000-row smoke run."""
+    data = fake_data()
+    return run_all.subsample_train(data, 200) if fast else data
+
+
 def _run(tmp_path, monkeypatch, *extra):
-    monkeypatch.setattr(run_all, "load_data", lambda path, fast=False: fake_data())
+    monkeypatch.setattr(run_all, "load_data", _fake_load_data)
     monkeypatch.setattr(run_all, "eda_figures", lambda path, out_dir: None)  # needs the real CSV
     return run_all.main(["--folds", "3", "--boot", "30",
                          "--results-dir", str(tmp_path / "results"),
@@ -199,18 +213,23 @@ def _without_timings(obj):
     return obj
 
 
-def test_two_runs_give_identical_numbers(tmp_path, monkeypatch):
-    """Everything is seeded, so a second run reproduces every number but the timings (Problem 7)."""
+@pytest.mark.parametrize("fast", [False, True])
+def test_two_runs_give_identical_numbers(tmp_path, monkeypatch, fast):
+    """Everything is seeded, so a second run reproduces every number but the timings (Problem 7).
+
+    With --fast, the training rows are also subsampled (with the seed) before anything is fitted.
+    """
     monkeypatch.setattr(run_all, "DecisionTree", StandInTree)
     monkeypatch.setattr(run_all, "PegasosSVM", StandInSVM)
     runs = [tmp_path / "first", tmp_path / "second"]
     for out in runs:
-        _run(out, monkeypatch, "--no-figures")
+        _run(out, monkeypatch, "--no-figures", *(["--fast"] if fast else []))
     first, second = (json.loads((out / "results" / "metrics.json").read_text(encoding="utf-8"))
                      for out in runs)
     assert first["scaling"] and first["task_b"][0]["cv"]["fit_seconds"], "timings were recorded"
+    assert first["data"]["train"] == (200 if fast else 294)
     assert _without_timings(first) == _without_timings(second)
-    for name in ("task_a.tex", "task_b.tex"):
+    for name in ("headline.tex", "task_a.tex", "task_b.tex"):
         assert (runs[0] / "tables" / name).read_text(encoding="utf-8") == \
             (runs[1] / "tables" / name).read_text(encoding="utf-8")
 
