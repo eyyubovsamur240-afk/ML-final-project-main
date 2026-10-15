@@ -563,12 +563,17 @@ def make_figures(data: dict, outputs_a: dict, outputs_b: dict, analysis: dict,
 def eda_figures(data_path: str, out_dir: str):
     """Figures 1-4 from src/eda.py (the data owner's module), if the project has one.
 
-    Returns the numbers it reports, or None when there is no src/eda.py yet.
+    Returns the numbers it reports, None when there is no src/eda.py yet, or
+    {"status": "failed", "reason": ...} when it raises: a problem in those figures
+    must not throw away the results this run has already computed.
     """
     if importlib.util.find_spec(f"{__package__}.eda") is None:
         return None
-    from . import eda
-    return eda.make_eda_figures(data_path, out_dir)
+    try:
+        from . import eda
+        return eda.make_eda_figures(data_path, out_dir)
+    except Exception as exc:
+        return {"status": "failed", "reason": f"{type(exc).__name__}: {exc}"}
 
 
 def _print_analysis(analysis: dict, agreement: dict) -> None:
@@ -676,11 +681,14 @@ def main(argv: list[str] | None = None) -> dict:
         eda = eda_figures(args.data, out_dirs["figures"])
         if eda is not None:
             report["eda"] = eda
+        eda_failed = isinstance(eda, dict) and eda.get("status") == "failed"
+        if eda_failed:
+            print(f"\nWarning: src/eda.py failed, Figures 1-4 not written ({eda['reason']})")
     written = write_outputs(report, out_dirs["results"], out_dirs["tables"])
     if not args.no_figures:
         written += make_figures(data, outputs_a, outputs_b, analysis, scaling,
                                 out_dirs["figures"])
-        if "eda" in report:
+        if "eda" in report and not eda_failed:
             written.append(os.path.join(out_dirs["figures"], "fig1-4 (data exploration, src/eda.py)"))
     print("\nWrote:\n  " + "\n  ".join(written))
     return report

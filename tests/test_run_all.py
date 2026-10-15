@@ -8,13 +8,17 @@ small stand-in models, so every code path for "our" models is exercised now.
 
 from __future__ import annotations
 
+import importlib.machinery
 import json
+import sys
+import types
 
 import numpy as np
 import pandas as pd
 import pytest
 from sklearn.tree import DecisionTreeClassifier, DecisionTreeRegressor
 
+import src
 from src import run_all
 
 CATEGORIES = ["Yeni tikili", "Köhnə tikili", "Obyekt"]
@@ -202,6 +206,26 @@ def test_fast_run_keeps_the_real_outputs(tmp_path, monkeypatch):
     assert not (tmp_path / "results" / "results.md").exists()
     assert "SMOKE RUN" in (tmp_path / "report" / "tables" / "fast" / "task_a.tex").read_text(
         encoding="utf-8")
+
+
+def test_a_failing_eda_module_does_not_lose_the_results(tmp_path, monkeypatch):
+    def broken(data_path, out_dir):
+        raise FileNotFoundError("data/house_sale.csv")
+
+    fake_eda = types.ModuleType("src.eda")
+    fake_eda.__spec__ = importlib.machinery.ModuleSpec("src.eda", None)
+    fake_eda.make_eda_figures = broken
+    monkeypatch.setitem(sys.modules, "src.eda", fake_eda)
+    monkeypatch.setattr(src, "eda", fake_eda, raising=False)
+    monkeypatch.setattr(run_all, "load_data", lambda path, fast=False: fake_data())
+    report = run_all.main(["--folds", "0", "--boot", "20", "--no-scaling",
+                           "--results-dir", str(tmp_path / "results"),
+                           "--tables-dir", str(tmp_path / "tables"),
+                           "--figures-dir", str(tmp_path / "figures")])
+    assert report["eda"]["status"] == "failed" and "house_sale.csv" in report["eda"]["reason"]
+    saved = json.loads((tmp_path / "results" / "metrics.json").read_text(encoding="utf-8"))
+    assert saved["eda"]["status"] == "failed", "the run's own results are still written"
+    assert (tmp_path / "figures" / "eval_confusion_matrices.pdf").exists()
 
 
 def test_bad_fold_count_is_rejected(monkeypatch):
