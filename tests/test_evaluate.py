@@ -144,6 +144,14 @@ def test_cross_validate_reports_mean_std_and_times(reg_data):
     assert seen == [(225, 75)] * 4, "preprocess is fitted per fold on the fold's training rows"
 
 
+def test_take_rows_keeps_the_memory_layout():
+    X = np.asfortranarray(np.arange(20.0).reshape(10, 2))
+    idx = np.array([7, 1, 3])
+    rows = evaluate.take_rows(X, idx)
+    assert rows.flags.f_contiguous and np.array_equal(rows, X[idx])
+    assert evaluate.take_rows(np.ascontiguousarray(X), idx).flags.c_contiguous
+
+
 def test_bootstrap_ci_brackets_the_estimate_and_is_reproducible(clf_data):
     y, pred, _ = clf_data
     f1 = lambda a, b: evaluate.precision_recall_f1(a, b)[2]  # noqa: E731

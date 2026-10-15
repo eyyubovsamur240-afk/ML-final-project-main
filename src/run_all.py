@@ -140,7 +140,7 @@ def subsample_train(data: dict, n: int) -> dict:
     rows = np.sort(np.random.default_rng(SEED).choice(n_train, size=n, replace=False))
     out = {key: dict(value) if isinstance(value, dict) else value for key, value in data.items()}
     for key in ("X", "log_price", "tier"):
-        out[key]["train"] = data[key]["train"][rows]
+        out[key]["train"] = evaluate.take_rows(data[key]["train"], rows)
     out["df"]["train"] = data["df"]["train"].iloc[rows]
     return out
 
@@ -362,9 +362,10 @@ def scaling_study(task: str, specs: list[ModelSpec], data: dict, names: set,
         for spec in specs:
             if spec.name == TRIVIAL or spec.name not in names:
                 continue
-            spec.make().fit(X[subsets[0]], y[subsets[0]])  # warm-up
+            spec.make().fit(evaluate.take_rows(X, subsets[0]), y[subsets[0]])  # warm-up
             for idx in subsets:
-                seconds = [evaluate.timed(spec.make().fit, X[idx], y[idx])[1]
+                X_sub = evaluate.take_rows(X, idx)  # same memory layout as the full split
+                seconds = [evaluate.timed(spec.make().fit, X_sub, y[idx])[1]
                            for _ in range(repeats)]
                 rows.append({"task": task, "model": spec.name, "n_train": len(idx),
                              "fit_seconds": float(np.median(seconds))})

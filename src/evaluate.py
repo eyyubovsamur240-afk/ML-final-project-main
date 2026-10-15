@@ -245,6 +245,18 @@ def mean_std(values) -> dict:
     return {"mean": float(np.mean(values)), "std": std}
 
 
+def take_rows(X, idx):
+    """X[idx] with X's memory layout kept.
+
+    Fancy indexing always returns a row-major copy, and the data arrives column-major
+    (from pandas). A model can fit at a different speed on the two layouts, so CV folds
+    and timing subsets would otherwise not be timed like the full training split.
+    """
+    X = np.asarray(X)
+    rows = X[idx]
+    return np.asfortranarray(rows) if X.ndim == 2 and X.flags.f_contiguous else rows
+
+
 def cross_validate(make_model, X, y, score, k: int = 5, seed: int = 42, stratify=None,
                    preprocess=None) -> dict:
     """k-fold cross-validation of a fresh model per fold.
@@ -261,7 +273,7 @@ def cross_validate(make_model, X, y, score, k: int = 5, seed: int = 42, stratify
     per_metric: dict[str, list] = {}
     fit_s, predict_s = [], []
     for train_idx, val_idx in kfold_indices(len(y), k=k, seed=seed, stratify=stratify):
-        X_fit, X_val = X[train_idx], X[val_idx]
+        X_fit, X_val = take_rows(X, train_idx), take_rows(X, val_idx)
         if preprocess is not None:
             X_fit, X_val = preprocess(X_fit, X_val)
         model = make_model()
