@@ -186,6 +186,12 @@ cross-validated scores and the remaining metrics, and Figures~\ref{fig:pred-actu
 and~\ref{fig:confusion} show the Task~A predictions and the Task~B confusion
 matrices. Table~\ref{tab:timing} gives the fit and predict times, and
 Figure~\ref{fig:scaling} how fit time grows with the training-set size.
+Figure~\ref{fig:roc} shows the ROC curves behind the AUC column.
+Figures~\ref{fig:importance} and~\ref{fig:impurity} show which features the
+models rely on, and Figure~\ref{fig:svm-weights} the largest weights of the
+linear SVMs. Figures~\ref{fig:errors-a} and~\ref{fig:errors-b} break the test
+errors down by price band, by how many training listings share the
+listing's district, and by distance from the tier threshold.
 
 \generatedtable{tables/headline.tex}
 \generatedtable{tables/task_a.tex}
@@ -212,8 +218,73 @@ Figure~\ref{fig:scaling} how fit time grows with the training-set size.
   \centering
   \generatedfigure{figures/eval_fit_time_scaling.pdf}{\linewidth}
   \caption{Fit time against training-set size (median of three fits on
-    nested subsamples of the training split; log--log axes).}
+    nested subsamples of the training split; log--log axes). SGD's epochs
+    and \texttt{LinearSVC}'s $C$ are re-matched at each size;
+    Table~\ref{tab:timing} notes anything else our SVM's fit time
+    includes.}
   \label{fig:scaling}
+\end{figure}
+
+\begin{figure}[t]
+  \centering
+  \generatedfigure{figures/eval_roc_curves.pdf}{\linewidth}
+  \caption{Task~B ROC curves on the test split, from each model's
+    continuous scores (the SVMs' margins, the trees' predicted probabilities).}
+  \label{fig:roc}
+\end{figure}
+
+\begin{figure*}[t]
+  \centering
+  \generatedfigure{figures/eval_feature_importance.pdf}{0.8\textwidth}
+  \caption{Permutation importance on the validation split: how much the
+    score drops (RMSE on $\log(\text{price})$ rises for Task~A, F1 falls
+    for Task~B) when all one-hot columns of a feature are shuffled
+    together; mean of three shuffles, largest twelve features per model.}
+  \label{fig:importance}
+\end{figure*}
+
+\begin{figure}[t]
+  \centering
+  \generatedfigure{figures/eval_tree_impurity_importance.pdf}{\linewidth}
+  \caption{Impurity-decrease importance of the trees on the training
+    split, as a share of the total decrease, with the one-hot columns of a
+    feature summed.}
+  \label{fig:impurity}
+\end{figure}
+
+\begin{figure*}[t]
+  \centering
+  \generatedfigure{figures/eval_svm_weights.pdf}{0.85\textwidth}
+  \caption{The fifteen largest weights (by absolute value) of each linear
+    SVM, on standardised columns, one-hot columns shown separately. Each
+    panel has its own scale.}
+  \label{fig:svm-weights}
+\end{figure*}
+
+\begin{figure*}[t]
+  \centering
+  \begin{minipage}[b]{0.56\textwidth}
+    \centering
+    \generatedfigure{figures/eval_error_by_price_band.pdf}{\linewidth}
+  \end{minipage}\hfill
+  \begin{minipage}[b]{0.42\textwidth}
+    \centering
+    \generatedfigure{figures/eval_error_by_district_coverage.pdf}{\linewidth}
+  \end{minipage}
+  \caption{Task~A test error by price band (left) and by the number of
+    training listings in the listing's district (right): median of
+    $|$predicted $-$ actual$|$ / actual price; $n$ = test listings in the
+    group.}
+  \label{fig:errors-a}
+\end{figure*}
+
+\begin{figure}[t]
+  \centering
+  \generatedfigure{figures/eval_error_by_threshold_margin.pdf}{\linewidth}
+  \caption{Task~B test error rate by distance from the tier threshold,
+    $|\log(\text{price}/\text{threshold})|$; $n$ = test listings in the
+    group.}
+  \label{fig:errors-b}
 \end{figure}
 
 \section{Discussion and Limitations}
