@@ -148,14 +148,18 @@ and the confusion matrix.
 settings. Against our Pegasos SVM we fit \texttt{SGDClassifier} (hinge loss,
 $\alpha=\lambda$, whole epochs with at least as many updates as Pegasos) and
 \texttt{LinearSVC} ($C=1/(\lambda n)$ for $n$ training rows), each in a
-\texttt{Pipeline} after \texttt{StandardScaler}, so all three solve the same
-regularised hinge-loss problem on features standardised with training
-statistics only. Trivial floors predict the training mean (Task~A) and the
-majority class (Task~B).
+\texttt{Pipeline} after \texttt{StandardScaler}. All three target the same
+$\lambda$-regularised hinge loss on features standardised with training
+statistics only, but none is run to the exact optimum: Pegasos and SGD stop
+after a fixed number of updates, \texttt{LinearSVC} after 20{,}000
+iterations (with a convergence warning), and each handles the intercept its
+own way. Trivial floors predict the training mean (Task~A) and the majority
+class (Task~B).
 
-\textbf{Analysis and timing.} Feature importance treats all one-hot columns
-of a feature as one: impurity decrease for the trees, permutation importance
-on the validation split for every model, and the weights of the linear SVMs.
+\textbf{Analysis and timing.} Permutation importance (on the validation
+split, for every model) and the trees' impurity decrease treat all one-hot
+columns of a feature as one; for the linear SVMs we show the largest
+individual weights on the standardised columns.
 Fit and predict times are wall-clock seconds on one machine; fit time against
 training-set size is the median of three fits on nested subsamples of
 $1/8$, $1/4$, $1/2$ and all of the training split.
@@ -176,10 +180,12 @@ numbers apart from the timings.
   \includegraphics[width=#2]{#1}}{\missinggenerated{#1}}}
 
 \section{Results}
-Table~\ref{tab:results} compares every model on both tasks on the held-out
+Table~\ref{tab:results} compares the models on both tasks on the held-out
 test split. Tables~\ref{tab:task-a} and~\ref{tab:task-b} add the
-cross-validated scores and the remaining metrics, and
-Table~\ref{tab:timing} the fit and predict times.
+cross-validated scores and the remaining metrics, and Figures~\ref{fig:pred-actual}
+and~\ref{fig:confusion} show the Task~A predictions and the Task~B confusion
+matrices. Table~\ref{tab:timing} gives the fit and predict times, and
+Figure~\ref{fig:scaling} how fit time grows with the training-set size.
 
 \generatedtable{tables/headline.tex}
 \generatedtable{tables/task_a.tex}
@@ -201,6 +207,14 @@ Table~\ref{tab:timing} the fit and predict times.
     tier, columns: predicted tier).}
   \label{fig:confusion}
 \end{figure*}
+
+\begin{figure}[t]
+  \centering
+  \generatedfigure{figures/eval_fit_time_scaling.pdf}{\linewidth}
+  \caption{Fit time against training-set size (median of three fits on
+    nested subsamples of the training split; log--log axes).}
+  \label{fig:scaling}
+\end{figure}
 
 \section{Discussion and Limitations}
 Where and why each model fails (luxury outliers, sparse districts,
