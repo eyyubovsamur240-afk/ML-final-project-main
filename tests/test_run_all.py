@@ -102,12 +102,16 @@ class StandInSVM:
         y_pm = np.where(np.asarray(y) == 1, 1.0, -1.0)
         Xa = np.hstack([X, np.ones((len(X), 1))])
         w = np.zeros(Xa.shape[1])
+        self.history_ = []  # the objective on every row every 100 steps, like our Pegasos
         for t in range(1, self.n_iters + 1):
             batch = rng.choice(len(Xa), size=max(1, len(Xa) // 2), replace=False)
             Xb, yb = Xa[batch], y_pm[batch]
             active = yb * (Xb @ w) < 1
             grad = self.lambda_ * w - (yb[active, None] * Xb[active]).sum(0) / len(Xb)
             w -= grad / (self.lambda_ * t + 10)
+            if t % 100 == 0:
+                hinge = np.maximum(0, 1 - y_pm * (Xa @ w)).mean()
+                self.history_.append(self.lambda_ / 2 * w[:-1] @ w[:-1] + hinge)
         self.w, self.b = w[:-1], w[-1]
         return self
 
@@ -165,6 +169,8 @@ def test_run_all_with_stand_in_models_exercises_every_step(tmp_path, monkeypatch
     assert tree_a["test"]["rmse_log"] == pytest.approx(names_a[run_all.SK_TREE]["test"]["rmse_log"])
     assert names_b[run_all.OUR_SVM]["test"]["f1"] > 0.6
     assert "roc_auc" in names_b[run_all.OUR_SVM]["test_ci"]
+    assert names_b[run_all.OUR_SVM]["objective_evaluations"] == 3, "300 steps, every 100"
+    assert "objective_evaluations" not in names_b[run_all.SK_SGD]
 
     analysis = report["analysis"]
     assert run_all.OUR_TREE in analysis["task_a"] and run_all.TRIVIAL not in analysis["task_a"]
@@ -201,9 +207,19 @@ def test_run_all_with_stand_in_models_exercises_every_step(tmp_path, monkeypatch
     assert r"\label{tab:results}" in tex and r"\begin{table}" in tex
     assert tex.count("& n/a &") == 3, "the SVMs have no Task A result"
     assert "Not implemented yet" not in tex, "every model ran"
+    assert "Trivial baseline: the training mean (Task A)" in tex
+    tex = (tmp_path / "tables" / "task_a.tex").read_text(encoding="utf-8")
+    assert "CV $R^2$" in tex
     tex = (tmp_path / "tables" / "task_b.tex").read_text(encoding="utf-8")
     assert r"\label{tab:task-b}" in tex and "Ours: SVM (Pegasos)" in tex
-    assert r"\begin{table*}" in tex and "3-fold" in tex
+    assert r"\begin{table*}" in tex and "3-fold" in tex and "CV AUC" in tex
+    svm_row = next(line for line in tex.splitlines() if line.strip().startswith(run_all.OUR_SVM))
+    assert svm_row.count("[") == 2, "test F1 and test AUC both have an interval"
+    tex = (tmp_path / "tables" / "timing.tex").read_text(encoding="utf-8")
+    assert "CV fit (s)" in tex and "294 rows" in tex
+    assert tex.count("includes evaluating its objective") == 1
+    assert "Ours: SVM (Pegasos) includes evaluating its objective on every training row 3 times" \
+        in tex
     figures = {p.name for p in (tmp_path / "figures").iterdir()}
     assert {"eval_pred_vs_actual.pdf", "eval_confusion_matrices.pdf", "eval_roc_curves.pdf",
             "eval_svm_weights.pdf", "eval_fit_time_scaling.pdf",

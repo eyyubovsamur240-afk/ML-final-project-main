@@ -203,6 +203,11 @@ def _fit_and_score(spec: ModelSpec, task: str, data: dict, folds: int,
                n_train=len(y["train"]),
                validation=score(model, X["val"], y["val"]),
                test=score(model, X["test"], y["test"]))
+    # Our SVM can record its objective on every training row while it trains (history_);
+    # that is part of its fit time, so the timing caption says how often it happened.
+    history = getattr(model, "history_", None)
+    if isinstance(history, (list, tuple, np.ndarray)) and len(history):
+        row["objective_evaluations"] = len(history)
 
     # 95% bootstrap intervals on the test set for the headline metrics.
     if task == "A":
@@ -376,8 +381,8 @@ def scaling_study(task: str, specs: list[ModelSpec], data: dict, names: set,
 
 # --- 6. Output ----------------------------------------------------------------------
 def result_rows(rows: list[dict], task: str) -> list[dict]:
-    """The results table of one task: CV mean ± std, test value [95% CI] and the other
-    test metrics, one row per implemented model, the trivial floor last."""
+    """The results table of one task: CV mean ± std, test value [95% CI] (RMSE; F1 and
+    AUC) and the other test metrics, one row per implemented model, the trivial floor last."""
     ok = [r for r in rows if r.get("status") == "ok"]
     ok = [r for r in ok if r["model"] != TRIVIAL] + [r for r in ok if r["model"] == TRIVIAL]
     table = []
@@ -385,12 +390,15 @@ def result_rows(rows: list[dict], task: str) -> list[dict]:
         test, cv = r["test"], r.get("cv", {})
         if task == "A":
             table.append({"model": r["model"], "cv_rmse": cv.get("rmse_log"),
-                          "test_rmse": r["test_ci"]["rmse_log"], "test_mae": test["mae_log"],
-                          "test_r2": test["r2_log"], "test_mape": test["median_ape"]})
+                          "test_rmse": r["test_ci"]["rmse_log"], "cv_r2": cv.get("r2_log"),
+                          "test_r2": test["r2_log"], "test_mae": test["mae_log"],
+                          "test_mape": test["median_ape"]})
         else:
             table.append({"model": r["model"], "cv_f1": cv.get("f1"), "test_f1": r["test_ci"]["f1"],
+                          "cv_auc": cv.get("roc_auc"),
+                          "test_auc": r["test_ci"].get("roc_auc", test.get("roc_auc")),
                           "test_precision": test["precision"], "test_recall": test["recall"],
-                          "test_accuracy": test["accuracy"], "test_auc": test.get("roc_auc")})
+                          "test_accuracy": test["accuracy"]})
     return table
 
 
@@ -410,22 +418,23 @@ def headline_rows(table_a: list[dict], table_b: list[dict]) -> list[dict]:
 
 
 TABLE_COLUMNS = {
-    "A": ["model", "cv_rmse", "test_rmse", "test_mae", "test_r2", "test_mape"],
-    "B": ["model", "cv_f1", "test_f1", "test_precision", "test_recall", "test_accuracy",
-          "test_auc"],
+    "A": ["model", "cv_rmse", "test_rmse", "cv_r2", "test_r2", "test_mae", "test_mape"],
+    "B": ["model", "cv_f1", "test_f1", "cv_auc", "test_auc", "test_precision", "test_recall",
+          "test_accuracy"],
     "headline": ["model", "task_a_rmse", "task_b_f1"],
 }
 TABLE_HEADERS = {
-    "A": ["Model", "CV RMSE(log)", "test RMSE(log) [95% CI]", "test MAE(log)", "test R2(log)",
-          "test median APE (fraction)"],
-    "B": ["Model", "CV F1", "test F1 [95% CI]", "test precision", "test recall", "test accuracy",
-          "test AUC"],
+    "A": ["Model", "CV RMSE(log)", "test RMSE(log) [95% CI]", "CV R2(log)", "test R2(log)",
+          "test MAE(log)", "test median APE (fraction)"],
+    "B": ["Model", "CV F1", "test F1 [95% CI]", "CV AUC", "test AUC [95% CI]", "test precision",
+          "test recall", "test accuracy"],
     "headline": ["Model", "Task A: test RMSE(log) [95% CI]", "Task B: test F1 [95% CI]"],
 }
 LATEX_HEADERS = {
-    "A": ["Model", "CV RMSE", "Test RMSE [95\\% CI]", "Test MAE", "Test $R^2$",
+    "A": ["Model", "CV RMSE", "Test RMSE [95\\% CI]", "CV $R^2$", "Test $R^2$", "Test MAE",
           "Median APE"],
-    "B": ["Model", "CV F1", "Test F1 [95\\% CI]", "Precision", "Recall", "Accuracy", "AUC"],
+    "B": ["Model", "CV F1", "Test F1 [95\\% CI]", "CV AUC", "Test AUC [95\\% CI]", "Precision",
+          "Recall", "Accuracy"],
     "headline": ["Model", "Task A: RMSE [95\\% CI]", "Task B: F1 [95\\% CI]"],
 }
 
@@ -479,11 +488,14 @@ def _finite(obj):
     return obj
 
 
-def _captions(config: dict, skipped: dict | None = None) -> dict:
+def _captions(config: dict, skipped: dict | None = None, n_train: int | None = None,
+              objective_evals: dict | None = None) -> dict:
     """Table captions that say how the numbers were produced.
 
     skipped = {"A": [...], "B": [...]}: models still "not implemented yet", which have
     no row in that task's table; the captions name them so no model silently disappears.
+    objective_evals = {model: k}: models whose fit evaluates their objective on every
+    training row k times (our SVM's history_), which the timing caption has to say.
     """
     prefix = "SMOKE RUN (training split subsampled to 3,000 rows). " if config["fast"] else ""
     cv = (f"CV = {config['folds']}-fold mean $\\pm$ std on the training split; "
@@ -505,6 +517,13 @@ def _captions(config: dict, skipped: dict | None = None) -> dict:
                                  for name, tasks in by_model.items())
     floor_b = ("The trivial floor predicts the training majority class for every listing, so "
                "its premium-class precision, recall and F1 are 0 when that class is standard.")
+    folds = config["folds"]
+    cv_fit = (f", per CV fold (mean $\\pm$ std over the {folds} folds, each fitted on "
+              f"{folds - 1}/{folds} of those rows)" if folds >= 2 else "")
+    rows = f" ({n_train:,} rows)" if n_train else ""
+    logged = "".join(f" The fit time of {evaluate.latex_escape(name)} includes evaluating its "
+                     f"objective on every training row {k:,} times, so it grows with the "
+                     "training-set size." for name, k in (objective_evals or {}).items())
     return {
         "A": f"{prefix}Task A, regression on log(price). {cv}{test} Median APE = median of "
              "$|$predicted $-$ actual$|$ / actual price in AZN, as a fraction (0.12 = 12\\%)."
@@ -513,13 +532,15 @@ def _captions(config: dict, skipped: dict | None = None) -> dict:
              f"price). Precision, recall and F1 are for the premium class. {cv}{test} "
              f"{floor_b} n/a = not available (e.g. no AUC for a model without continuous "
              "scores yet)." + not_shown("B"),
-        "timing": f"{prefix}Fit time on the training split and predict time on the test split "
-                  "(seconds, one run).",
+        "timing": f"{prefix}Fit time on the full training split{rows} (one run){cv_fit}, and "
+                  f"predict time on the test split, in seconds.{logged}",
         "headline": f"{prefix}Headline results on the held-out test split: Task A RMSE on "
                     "log(price), Task B F1 for the premium class, each with a 95\\% bootstrap "
                     f"interval ({config['n_boot']:,} resamples). Tables~\\ref{{tab:task-a}} and "
                     "\\ref{tab:task-b} add the cross-validated scores and the other metrics. "
-                    "n/a = no result for that task (the SVMs are classifiers only)."
+                    "Trivial baseline: the training mean (Task A) and the training majority "
+                    "class (Task B). n/a = no result for that task (the SVMs are classifiers "
+                    "only)."
                     + (f" Not implemented yet: {headline_skipped}." if headline_skipped else ""),
     }
 
@@ -537,7 +558,10 @@ def write_outputs(report: dict, results_dir: str, tables_dir: str) -> list[str]:
 
     skipped = {task: [r["model"] for r in report[f"task_{task.lower()}"]
                       if r.get("status") != "ok"] for task in ("A", "B")}
-    captions = _captions(report["config"], skipped)
+    objective_evals = {r["model"]: r["objective_evaluations"]
+                       for r in report["task_a"] + report["task_b"]
+                       if r.get("objective_evaluations")}
+    captions = _captions(report["config"], skipped, report["data"]["train"], objective_evals)
     title = "# Results" + (" (SMOKE RUN, --fast)" if report["config"]["fast"] else "")
     md = [f"{title}, seed {SEED}", ""]
     for task, name in (("headline", "Headline: both tasks, test split"),
@@ -563,6 +587,11 @@ def write_outputs(report: dict, results_dir: str, tables_dir: str) -> list[str]:
         f.write("\n".join(md) + "\n")
     paths.append(path)
 
+    with_cv = report["config"]["folds"] >= 2
+    timing_columns = ["task", "model", "fit_seconds",
+                      *(["cv_fit_seconds"] if with_cv else []), "predict_seconds"]
+    timing_headers = ["Task", "Model", "Fit (s)", *(["CV fit (s)"] if with_cv else []),
+                      "Predict (s)"]
     tex = {
         "headline.tex": evaluate.latex_table(
             report["tables"]["headline"], TABLE_COLUMNS["headline"], LATEX_HEADERS["headline"],
@@ -575,9 +604,8 @@ def write_outputs(report: dict, results_dir: str, tables_dir: str) -> list[str]:
             report["tables"]["B"], TABLE_COLUMNS["B"], LATEX_HEADERS["B"], captions["B"],
             label="tab:task-b", align="lcccccc", wide=True),
         "timing.tex": evaluate.latex_table(
-            report["timing"], ["task", "model", "n_train", "fit_seconds", "predict_seconds"],
-            ["Task", "Model", "Train rows", "Fit (s)", "Predict (s)"], captions["timing"],
-            label="tab:timing", align="llrrr"),
+            report["timing"], timing_columns, timing_headers, captions["timing"],
+            label="tab:timing", align="ll" + "r" * (len(timing_columns) - 2)),
     }
     for name, text in tex.items():
         path = os.path.join(tables_dir, name)
