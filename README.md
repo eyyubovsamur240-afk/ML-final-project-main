@@ -40,10 +40,17 @@ only. For the SVM you do **not** need a QP/SMO solver — use the
 │   ├── data_prep.py        #   loading, cleaning, split, tier label
 │   ├── decision_tree.py    #   DecisionTree (Gini/entropy/MSE)
 │   ├── svm.py              #   PegasosSVM (hinge-loss sub-gradient)
-│   ├── evaluate.py         #   metrics + comparison helpers
+│   ├── evaluate.py         #   metrics, k-fold CV, bootstrap intervals, tables
+│   ├── baselines.py        #   scikit-learn baselines with matched settings, trivial floors
+│   ├── error_analysis.py   #   error breakdowns, feature importance
+│   ├── plots.py            #   evaluation figures
 │   └── run_all.py          #   ONE command reproduces every number/figure
+├── tests/                  # pytest suite (run by CI)
+├── tools/                  # CI checks: golden rule, no data, submission readiness
+├── results/                # metrics.json, results.md (generated, git-ignored)
 ├── report/                 # IEEE report (self-contained, no IEEEtran.cls)
 │   ├── report.tex
+│   ├── tables/             #   generated .tex tables (git-ignored until final)
 │   └── figures/
 └── presentation/           # your slides PDF
 ```
@@ -104,8 +111,9 @@ district and distance from the tier threshold. It then writes:
 These outputs are git-ignored: they are regenerated, never edited by hand. Once the
 numbers are final, commit the report's tables and figures explicitly
 (`git add -f report/tables/*.tex report/figures/<name>.pdf`, see CONTRIBUTING.md) so
-the report builds in CI. A model whose code is still a `TODO` stub is listed as
-"not implemented yet" and skipped. The final hyperparameters live at the top of
+the report builds in CI. A model whose `fit` or `predict` is still a `TODO` stub is
+listed as "not implemented yet" and skipped; if only `predict_proba` /
+`decision_function` is a stub, the model is scored without an AUC (n/a in the tables). The final hyperparameters live at the top of
 `src/run_all.py` (`TREE_REGRESSION`, `TREE_CLASSIFICATION`, `SVM`) and are chosen on
 the validation split only.
 

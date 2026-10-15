@@ -15,8 +15,9 @@ Matching notes (worth a sentence in the report):
     loss="hinge" and alpha=lambda minimises the same objective, except that it
     leaves the intercept unregularised. Its "optimal" step 1/(alpha*(t+t0)) decays
     like Pegasos' 1/(lambda*t) but starts smaller (t0 is about 1,000 here), and it
-    shuffles once per epoch instead of sampling rows with replacement. It gets the
-    same number of updates as Pegasos (epochs_for).
+    shuffles once per epoch instead of sampling rows with replacement. It runs whole
+    epochs, so it gets at least as many updates as Pegasos (epochs_for rounds up):
+    about 11% more on the full training split, under 1% more on a 3,000-row subsample.
   * LinearSVC minimises 1/2 ||w||^2 + C sum hinge, the same problem when
     C = 1/(lambda*n), with n the number of FIT rows. On the full training split it
     stops at max_iter with a ConvergenceWarning (recorded by run_all), but its test
@@ -81,7 +82,10 @@ def sk_linear_svc(lambda_: float, n_train: int, seed: int = 42, max_iter: int = 
 
 
 def epochs_for(n_iters: int, n_train: int) -> int:
-    """Pegasos steps -> passes over the data, to give SGDClassifier the same budget."""
+    """Pegasos steps -> whole passes over the data for SGDClassifier.
+
+    Rounded up, so SGD gets at least n_iters updates (epochs * n_train >= n_iters).
+    """
     return max(1, math.ceil(n_iters / max(1, n_train)))
 
 

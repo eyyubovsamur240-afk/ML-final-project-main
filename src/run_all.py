@@ -168,8 +168,10 @@ def run_model(spec: ModelSpec, task: str, data: dict, folds: int, n_boot: int) -
     """Fit on train, score on validation and test, cross-validate on train.
 
     Returns (metrics for metrics.json, in-memory outputs for the analysis step).
-    A model that hits a TODO stub anywhere (fit, predict, ...) is reported as
-    "not implemented yet". Warnings raised meanwhile (e.g. a ConvergenceWarning)
+    A model whose fit or predict is still a TODO stub is reported as "not
+    implemented yet". If only predict_proba / decision_function is a stub, the
+    model is still scored on its predictions and just has no AUC or ROC curve
+    (n/a in the tables). Warnings raised meanwhile (e.g. a ConvergenceWarning)
     are recorded in the row instead of being printed in the progress output.
     """
     with warnings.catch_warnings(record=True) as caught:
@@ -399,7 +401,7 @@ TABLE_COLUMNS = {
 }
 TABLE_HEADERS = {
     "A": ["Model", "CV RMSE(log)", "test RMSE(log) [95% CI]", "test MAE(log)", "test R2(log)",
-          "test median APE"],
+          "test median APE (fraction)"],
     "B": ["Model", "CV F1", "test F1 [95% CI]", "test precision", "test recall", "test accuracy",
           "test AUC"],
 }
@@ -453,10 +455,11 @@ def _captions(config: dict) -> dict:
     test = (f"test = held-out test split, with a 95\\% bootstrap interval "
             f"({config['n_boot']:,} resamples).")
     return {
-        "A": f"{prefix}Task A, regression on log(price). {cv}{test} Median APE = median "
-             "absolute percentage error of the price in AZN.",
+        "A": f"{prefix}Task A, regression on log(price). {cv}{test} Median APE = median of "
+             "$|$predicted $-$ actual$|$ / actual price in AZN, as a fraction (0.12 = 12\\%).",
         "B": f"{prefix}Task B, premium vs standard (premium = above the training median "
-             f"price). Precision, recall and F1 are for the premium class. {cv}{test}",
+             f"price). Precision, recall and F1 are for the premium class. {cv}{test} "
+             "n/a = not available (e.g. no AUC for a model without continuous scores yet).",
         "timing": f"{prefix}Fit time on the training split and predict time on the test split "
                   "(seconds, one run).",
     }

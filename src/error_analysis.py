@@ -1,9 +1,11 @@
 """
 error_analysis.py — where and why the models fail (Problem 6).
 
-All functions take the TEST rows (`test_df`, as returned by data_prep) and a
-model's test predictions, and return small pandas tables ready to print or to
-turn into report tables.
+The error breakdowns take the TEST rows (`test_df`, as returned by data_prep) and
+a model's test predictions. The importance functions take a fitted model's
+weights or importances, or (permutation importance) whichever split they are
+given: run_all passes the VALIDATION split. All return small pandas tables
+ready to print or to turn into report tables.
 
   Task A (log price):  errors by price band, by category, by how well a district
                        is covered in training; the worst individual listings
