@@ -7,12 +7,20 @@ baselines.py — what our from-scratch models are compared against (Problem 5).
     a model that cannot beat them has learned nothing.
   * StandardScaled: the train-only standardization our Pegasos SVM needs,
     wrapped like a scikit-learn Pipeline so CV can refit it per fold.
+  * SizedToFitData: builds a baseline at fit time from the number of fit rows,
+    so the SVM baselines stay matched on CV folds and scaling-study subsets.
 
 Matching notes (worth a sentence in the report):
   * Pegasos minimises  lambda/2 ||w||^2 + (1/n) sum hinge.  SGDClassifier with
-    loss="hinge", alpha=lambda and learning_rate="optimal" (step 1/(alpha*(t+t0)))
-    minimises the same objective with the same step-size schedule. LinearSVC
-    minimises 1/2 ||w||^2 + C sum hinge, the same problem when C = 1/(lambda*n).
+    loss="hinge" and alpha=lambda minimises the same objective, except that it
+    leaves the intercept unregularised. Its "optimal" step 1/(alpha*(t+t0)) decays
+    like Pegasos' 1/(lambda*t) but starts smaller (t0 is about 1,000 here), and it
+    shuffles once per epoch instead of sampling rows with replacement. It gets the
+    same number of updates as Pegasos (epochs_for).
+  * LinearSVC minimises 1/2 ||w||^2 + C sum hinge, the same problem when
+    C = 1/(lambda*n), with n the number of FIT rows. On the full training split it
+    stops at max_iter with a ConvergenceWarning (recorded by run_all), but its test
+    accuracy is unchanged at 5x and 15x more iterations (0.8916 vs 0.8915).
   * scikit-learn weights min_impurity_decrease by the node's share of the
     training rows (N_t/N); if our tree uses the unweighted gain, the same number
     prunes differently. Leave it at 0.0 for a like-for-like comparison.
@@ -105,6 +113,32 @@ class MajorityClassifier:
         proba = np.zeros((len(X), len(self.classes_)))
         proba[:, int(np.flatnonzero(self.classes_ == self.majority_)[0])] = 1.0
         return proba
+
+
+class SizedToFitData:
+    """A scikit-learn baseline built when fit() is called: build(n_fit_rows) -> model.
+
+    LinearSVC's C = 1/(lambda*n) and SGD's epoch budget depend on n, so a model
+    built once for the full training split would solve a different problem on a
+    CV fold or on a scaling-study subsample.
+    """
+
+    def __init__(self, build):
+        self.build = build
+
+    def fit(self, X, y):
+        self.model = self.build(len(y))
+        self.model.fit(X, y)
+        return self
+
+    def predict(self, X):
+        return self.model.predict(X)
+
+    def __getattr__(self, name):
+        # decision_function, steps, ... come from the fitted model.
+        if name in ("build", "model"):
+            raise AttributeError(name)
+        return getattr(self.model, name)
 
 
 class StandardScaled:

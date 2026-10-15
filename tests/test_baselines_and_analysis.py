@@ -28,6 +28,18 @@ def test_svm_baselines_use_the_pegasos_objective():
     assert baselines.epochs_for(n_iters=1_001, n_train=500) == 3
 
 
+def test_sized_to_fit_data_matches_c_to_the_fit_rows():
+    rng = np.random.default_rng(0)
+    X, y = rng.normal(size=(200, 3)), np.repeat([0, 1], 100)
+    model = baselines.SizedToFitData(lambda n: baselines.sk_linear_svc(1e-2, n))
+    assert not hasattr(model, "decision_function"), "nothing to forward before fit"
+    model.fit(X[:50], np.tile([0, 1], 25))
+    assert model.model[-1].C == pytest.approx(1 / (1e-2 * 50))
+    model.fit(X, y)
+    assert model.model[-1].C == pytest.approx(1 / (1e-2 * 200))
+    assert model.decision_function(X).shape == (200,) and hasattr(model, "steps")
+
+
 def test_trivial_baselines():
     X = np.zeros((4, 2))
     assert baselines.MeanRegressor().fit(X, [1.0, 2.0, 3.0, 6.0]).predict(X).tolist() == [3.0] * 4
