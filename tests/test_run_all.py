@@ -178,6 +178,31 @@ def test_run_all_with_stand_in_models_exercises_every_step(tmp_path, monkeypatch
             "eval_tree_impurity_importance.pdf"} <= figures
 
 
+def _without_timings(obj):
+    """Drop every *_seconds entry: wall-clock times may differ between runs, nothing else may."""
+    if isinstance(obj, dict):
+        return {k: _without_timings(v) for k, v in obj.items() if not k.endswith("_seconds")}
+    if isinstance(obj, list):
+        return [_without_timings(v) for v in obj]
+    return obj
+
+
+def test_two_runs_give_identical_numbers(tmp_path, monkeypatch):
+    """Everything is seeded, so a second run reproduces every number but the timings (Problem 7)."""
+    monkeypatch.setattr(run_all, "DecisionTree", StandInTree)
+    monkeypatch.setattr(run_all, "PegasosSVM", StandInSVM)
+    runs = [tmp_path / "first", tmp_path / "second"]
+    for out in runs:
+        _run(out, monkeypatch, "--no-figures")
+    first, second = (json.loads((out / "results" / "metrics.json").read_text(encoding="utf-8"))
+                     for out in runs)
+    assert first["scaling"] and first["task_b"][0]["cv"]["fit_seconds"], "timings were recorded"
+    assert _without_timings(first) == _without_timings(second)
+    for name in ("task_a.tex", "task_b.tex"):
+        assert (runs[0] / "tables" / name).read_text(encoding="utf-8") == \
+            (runs[1] / "tables" / name).read_text(encoding="utf-8")
+
+
 def test_a_half_done_model_is_skipped_not_fatal(tmp_path, monkeypatch):
     monkeypatch.setattr(run_all, "DecisionTree", HalfDoneTree)
     report = _run(tmp_path, monkeypatch, "--no-figures", "--no-scaling")
