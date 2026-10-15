@@ -167,8 +167,20 @@ def test_run_all_with_stand_in_models_exercises_every_step(tmp_path, monkeypatch
     assert table_b[run_all.OUR_TREE]["test_precision"] is not None
     assert table_b[run_all.TRIVIAL]["test_accuracy"] > 0.4
 
+    headline = {r["model"]: r for r in report["tables"]["headline"]}
+    assert list(headline)[-1] == run_all.TRIVIAL and len(headline) == 6, "each model once"
+    assert headline[run_all.OUR_SVM]["task_a_rmse"] is None, "the SVM has no Task A entry"
+    assert headline[run_all.OUR_TREE]["task_a_rmse"] == tree_a["test_ci"]["rmse_log"]
+    assert headline[run_all.OUR_TREE]["task_b_f1"] == table_b[run_all.OUR_TREE]["test_f1"]
+
     saved = json.loads((tmp_path / "results" / "metrics.json").read_text(encoding="utf-8"))
     assert saved["data"]["train"] == 294 and saved["config"]["folds"] == 3
+    md = (tmp_path / "results" / "results.md").read_text(encoding="utf-8")
+    assert "## Headline" in md and "## Fit time vs training-set size" in md
+    assert "## Our tree vs scikit-learn's" in md
+    tex = (tmp_path / "tables" / "headline.tex").read_text(encoding="utf-8")
+    assert r"\label{tab:results}" in tex and r"\begin{table}" in tex
+    assert tex.count("& n/a &") == 3, "the SVMs have no Task A result"
     tex = (tmp_path / "tables" / "task_b.tex").read_text(encoding="utf-8")
     assert r"\label{tab:task-b}" in tex and "Ours: SVM (Pegasos)" in tex
     assert r"\begin{table*}" in tex and "3-fold" in tex

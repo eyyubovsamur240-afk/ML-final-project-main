@@ -99,9 +99,10 @@ fit time against training-set size, and errors broken down by price band,
 district and distance from the tier threshold. It then writes:
 
 - `results/metrics.json`: every number (including per-fold scores and error breakdowns)
-- `results/results.md`: the results and timing tables as text
-- `report/tables/task_a.tex`, `task_b.tex`, `timing.tex`: tables for the report
-  (`\input{tables/task_a.tex}`)
+- `results/results.md`: the results, timing and scaling tables, and how closely our
+  tree matches scikit-learn's, as text
+- `report/tables/headline.tex` (every model on both tasks), `task_a.tex`, `task_b.tex`,
+  `timing.tex`: tables for the report (`\input{tables/headline.tex}`)
 - `report/figures/eval_*.pdf`: predicted vs actual, error by price band and by district
   coverage, confusion matrices, ROC curves, error vs distance from the tier threshold,
   permutation importance, tree impurity importance, SVM weights, fit time vs

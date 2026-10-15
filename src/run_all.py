@@ -394,22 +394,54 @@ def result_rows(rows: list[dict], task: str) -> list[dict]:
     return table
 
 
+def headline_rows(table_a: list[dict], table_b: list[dict]) -> list[dict]:
+    """Every model on both tasks in one table (the results table Problem 6 asks for).
+
+    Test RMSE(log) for Task A and test F1 for Task B, each with its 95% bootstrap
+    interval; None (n/a) where a model does not do that task, e.g. the SVM on Task A.
+    """
+    rmse = {r["model"]: r["test_rmse"] for r in table_a}
+    f1 = {r["model"]: r["test_f1"] for r in table_b}
+    names = [name for name in dict.fromkeys([*f1, *rmse]) if name != TRIVIAL]
+    if TRIVIAL in rmse or TRIVIAL in f1:
+        names.append(TRIVIAL)
+    return [{"model": name, "task_a_rmse": rmse.get(name), "task_b_f1": f1.get(name)}
+            for name in names]
+
+
 TABLE_COLUMNS = {
     "A": ["model", "cv_rmse", "test_rmse", "test_mae", "test_r2", "test_mape"],
     "B": ["model", "cv_f1", "test_f1", "test_precision", "test_recall", "test_accuracy",
           "test_auc"],
+    "headline": ["model", "task_a_rmse", "task_b_f1"],
 }
 TABLE_HEADERS = {
     "A": ["Model", "CV RMSE(log)", "test RMSE(log) [95% CI]", "test MAE(log)", "test R2(log)",
           "test median APE (fraction)"],
     "B": ["Model", "CV F1", "test F1 [95% CI]", "test precision", "test recall", "test accuracy",
           "test AUC"],
+    "headline": ["Model", "Task A: test RMSE(log) [95% CI]", "Task B: test F1 [95% CI]"],
 }
 LATEX_HEADERS = {
     "A": ["Model", "CV RMSE", "Test RMSE [95\\% CI]", "Test MAE", "Test $R^2$",
           "Median APE"],
     "B": ["Model", "CV F1", "Test F1 [95\\% CI]", "Precision", "Recall", "Accuracy", "AUC"],
+    "headline": ["Model", "Task A: RMSE [95\\% CI]", "Task B: F1 [95\\% CI]"],
 }
+
+
+def agreement_rows(agreement: dict) -> list[dict]:
+    """tree_vs_sklearn() as table rows: share of identical test predictions, and size."""
+    rows = []
+    for task, entry in agreement.items():
+        rows.append({"task": "A" if task == "task_a" else "B",
+                     "share_identical": entry["share_identical"],
+                     "mean_abs_diff_log": entry.get("mean_abs_diff_log"),
+                     "depth_ours": entry["ours"].get("depth"),
+                     "depth_sklearn": entry["sklearn"].get("depth"),
+                     "leaves_ours": entry["ours"].get("n_leaves"),
+                     "leaves_sklearn": entry["sklearn"].get("n_leaves")})
+    return rows
 
 
 def timing_rows(rows_a: list[dict], rows_b: list[dict]) -> list[dict]:
@@ -462,6 +494,11 @@ def _captions(config: dict) -> dict:
              "n/a = not available (e.g. no AUC for a model without continuous scores yet).",
         "timing": f"{prefix}Fit time on the training split and predict time on the test split "
                   "(seconds, one run).",
+        "headline": f"{prefix}Headline results on the held-out test split: Task A RMSE on "
+                    "log(price), Task B F1 for the premium class, each with a 95\\% bootstrap "
+                    f"interval ({config['n_boot']:,} resamples). Tables~\\ref{{tab:task-a}} and "
+                    "\\ref{tab:task-b} add the cross-validated scores and the other metrics. "
+                    "n/a = no result for that task (the SVMs are classifiers only).",
     }
 
 
@@ -479,19 +516,33 @@ def write_outputs(report: dict, results_dir: str, tables_dir: str) -> list[str]:
     captions = _captions(report["config"])
     title = "# Results" + (" (SMOKE RUN, --fast)" if report["config"]["fast"] else "")
     md = [f"{title}, seed {SEED}", ""]
-    for task, name in (("A", "Task A: log(price)"), ("B", "Task B: premium vs standard")):
+    for task, name in (("headline", "Headline: both tasks, test split"),
+                       ("A", "Task A: log(price)"), ("B", "Task B: premium vs standard")):
         md += [f"## {name}", "", "```",
                evaluate.format_table(report["tables"][task], TABLE_COLUMNS[task],
                                      TABLE_HEADERS[task]), "```", ""]
     md += ["## Timing (seconds)", "", "```",
            evaluate.format_table(report["timing"], ["task", "model", "n_train", "fit_seconds",
                                                     "predict_seconds", "cv_fit_seconds"]), "```"]
+    if report["scaling"]:
+        md += ["", "## Fit time vs training-set size (seconds, median of the repeats)", "", "```",
+               evaluate.format_table(report["scaling"], ["task", "model", "n_train",
+                                                         "fit_seconds"]), "```"]
+    if report["tree_vs_sklearn"]:
+        md += ["", "## Our tree vs scikit-learn's, same hyperparameters (test split)", "", "```",
+               evaluate.format_table(agreement_rows(report["tree_vs_sklearn"]),
+                                     ["task", "share_identical", "mean_abs_diff_log",
+                                      "depth_ours", "depth_sklearn", "leaves_ours",
+                                      "leaves_sklearn"]), "```"]
     path = os.path.join(results_dir, "results.md")
     with open(path, "w", encoding="utf-8") as f:
         f.write("\n".join(md) + "\n")
     paths.append(path)
 
     tex = {
+        "headline.tex": evaluate.latex_table(
+            report["tables"]["headline"], TABLE_COLUMNS["headline"], LATEX_HEADERS["headline"],
+            captions["headline"], label="tab:results", align="lcc"),
         "task_a.tex": evaluate.latex_table(
             report["tables"]["A"], TABLE_COLUMNS["A"], LATEX_HEADERS["A"], captions["A"],
             label="tab:task-a", align="lccccc", wide=True),
@@ -652,6 +703,8 @@ def main(argv: list[str] | None = None) -> dict:
     # 6. output
     config = {"tree_regression": TREE_REGRESSION, "tree_classification": TREE_CLASSIFICATION,
               "svm": SVM, "folds": folds, "n_boot": n_boot, "fast": args.fast}
+    tables = {"A": result_rows(rows_a, "A"), "B": result_rows(rows_b, "B")}
+    tables["headline"] = headline_rows(tables["A"], tables["B"])
     report = {
         "seed": SEED,
         "config": config,
@@ -660,7 +713,7 @@ def main(argv: list[str] | None = None) -> dict:
                  "test_premium_share": float(np.mean(data["tier"]["test"]))},
         "task_a": rows_a,
         "task_b": rows_b,
-        "tables": {"A": result_rows(rows_a, "A"), "B": result_rows(rows_b, "B")},
+        "tables": tables,
         "timing": timing_rows(rows_a, rows_b),
         "scaling": scaling,
         "tree_vs_sklearn": agreement,
