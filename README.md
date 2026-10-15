@@ -1,33 +1,34 @@
 # Pricing bina.az listings with a from-scratch decision tree and SVM
 
 Our final project for MLE-AI-201 Machine Learning. On the **bina.az**
-real-estate dataset we predict a listing's sale price (Task A) and whether it
-is premium or standard (Task B) with a decision tree and a Pegasos SVM written
-in NumPy, and benchmark both honestly against scikit-learn. The brief is
+real-estate dataset we predict a listing's sale price (Task A, with our
+decision tree) and whether it is premium or standard (Task B, with the tree
+and our Pegasos SVM). Both models are written in NumPy and benchmarked
+against scikit-learn. The brief is
 `PROJECT_STATEMENT.pdf`; who did what is in `contribution_report.md`.
 
 - **Released:** Sun 04 Oct 2026
 - **Due:** **Sun 18 Oct 2026, 23:59 (Baku)** — two weeks, no late submissions.
 - **Demo:** defended in the session after the deadline.
 
-## What you submit (on Moodle)
-Exactly **three** things; **one member submits** for the whole team:
-1. **GitHub link** to your repo (tagged `v1.0-final`).
-2. **Report PDF** (IEEE two-column — use `report/report.tex`).
-3. **Slides PDF**.
+## Submission
+One of us submits three things on Moodle for the team:
+1. the **GitHub link** to this repo, tagged `v1.0-final`;
+2. the **report PDF**, built from `report/report.tex` (IEEE two-column);
+3. the **slides PDF**.
 
-Keep `contribution_report.md` in the repo root (checked at the demo).
+`contribution_report.md` stays in the repo root; it is checked at the demo.
 
 ## The two tasks
-- **Task A — Regression:** predict `price` (consider `log(price)`).
+- **Task A — Regression:** predict `log(price)`; errors are also reported in AZN.
 - **Task B — Classification:** predict a derived **price tier**
   (premium vs standard, median split on the training set).
 
-## Golden rule
-Your **decision tree** and your **SVM** must be **your own NumPy code**.
-scikit-learn is for the comparison baselines (and the optional bonuses)
-only. For the SVM you do **not** need a QP/SMO solver — use the
-**Pegasos** sub-gradient method (see the statement and `src/svm.py`).
+## From scratch
+The **decision tree** and the **SVM** are our own NumPy code; scikit-learn
+appears only in the comparison baselines, and CI checks that
+(`tools/check_golden_rule.py`). The SVM is trained with the **Pegasos**
+sub-gradient method rather than a QP/SMO solver (`src/svm.py`).
 
 ## Repo layout
 ```
@@ -37,7 +38,7 @@ only. For the SVM you do **not** need a QP/SMO solver — use the
 ├── .gitignore
 ├── contribution_report.md  # who did what (keep in repo root)
 ├── data/                   # dataset lives here (not committed — see data/README.md)
-├── src/                    # YOUR from-scratch code
+├── src/                    # our code (tree and SVM from scratch in NumPy)
 │   ├── data_prep.py        #   loading, cleaning, split, tier label
 │   ├── decision_tree.py    #   DecisionTree (Gini/entropy/MSE)
 │   ├── svm.py              #   PegasosSVM (hinge-loss sub-gradient)
@@ -53,7 +54,7 @@ only. For the SVM you do **not** need a QP/SMO solver — use the
 │   ├── report.tex
 │   ├── tables/             #   generated .tex tables (git-ignored until final)
 │   └── figures/
-└── presentation/           # your slides PDF
+└── presentation/           # slides PDF
 ```
 
 ## Reproducibility (graded)
