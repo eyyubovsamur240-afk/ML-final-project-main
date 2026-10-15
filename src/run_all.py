@@ -522,7 +522,7 @@ def make_figures(data: dict, outputs_a: dict, outputs_b: dict, analysis: dict,
                                                {k: v["pred"] for k, v in real_a.items()}, out_dir))
         paths.append(plots.error_by_group(
             {k: v["by_price_band"] for k, v in analysis["task_a"].items()}, "median_ape",
-            "Task A: median absolute % error by price band (test)", "median |error| / price",
+            "Task A: median relative price error by price band (test)", "median |error| / price",
             out_dir, "eval_error_by_price_band.pdf"))
         paths.append(plots.error_by_group(
             {k: v["by_district_coverage"] for k, v in analysis["task_a"].items()}, "median_ape",

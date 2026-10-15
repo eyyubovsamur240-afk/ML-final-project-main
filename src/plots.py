@@ -8,6 +8,7 @@ returns the path. The data-exploration figures (Figures 1-4) live in src/eda.py.
 
 from __future__ import annotations
 
+import math
 import os
 
 import matplotlib
@@ -15,6 +16,7 @@ import matplotlib
 matplotlib.use("Agg")  # no display needed; must come before pyplot
 import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np  # noqa: E402
+from matplotlib.ticker import NullFormatter  # noqa: E402
 
 from . import evaluate  # noqa: E402
 
@@ -31,22 +33,31 @@ def _save(fig, out_dir: str, name: str) -> str:
 
 def predicted_vs_actual(log_true, preds: dict, out_dir: str = FIGURES_DIR,
                         name: str = "eval_pred_vs_actual.pdf") -> str:
-    """Task A: predicted vs actual price (log-log), one panel per model."""
+    """Task A: predicted vs actual price (log-log), one panel per model.
+
+    The axes span the 0.5-99.5 percentiles of the actual prices so the bulk is readable;
+    each panel says how many test rows fall outside them (RMSE still uses every row).
+    """
     n = len(preds)
-    fig, axes = plt.subplots(1, n, figsize=(3.4 * n, 3.3), squeeze=False, sharey=True)
+    fig, axes = plt.subplots(1, n, figsize=(3.4 * n, 3.5), squeeze=False, sharey=True,
+                             layout="constrained")
     log_true = np.asarray(log_true, dtype=float)
     lo, hi = np.percentile(log_true, [0.5, 99.5])
     for ax, (model, log_pred) in zip(axes[0], preds.items(), strict=True):
-        ax.hexbin(log_true, np.asarray(log_pred, dtype=float), gridsize=45, bins="log",
+        log_pred = np.asarray(log_pred, dtype=float)
+        ax.hexbin(log_true, log_pred, gridsize=45, bins="log",
                   extent=(lo, hi, lo, hi), cmap="Blues", mincnt=1)
         ax.plot([lo, hi], [lo, hi], color="black", lw=0.8, ls="--")
+        outside = int(np.sum((log_true < lo) | (log_true > hi) | (log_pred < lo) | (log_pred > hi)))
+        ax.text(0.03, 0.97, f"{outside:,} of {len(log_true):,} rows outside the axes",
+                transform=ax.transAxes, fontsize=6.5, va="top")
         rmse = evaluate.rmse(log_true, log_pred)
         ax.set_title(f"{model}\nRMSE(log) = {rmse:.3f}", fontsize=9)
         ax.set_xlabel("actual log(price)")
         ax.set_xlim(lo, hi)
         ax.set_ylim(lo, hi)
     axes[0][0].set_ylabel("predicted log(price)")
-    fig.suptitle("Task A: predicted vs actual price on the test set", y=1.04)
+    fig.suptitle("Task A: predicted vs actual price on the test set", fontsize=10)
     return _save(fig, out_dir, name)
 
 
@@ -78,7 +89,7 @@ def confusion_matrices(results: dict, out_dir: str = FIGURES_DIR,
                        name: str = "eval_confusion_matrices.pdf") -> str:
     """Task B: one 2x2 confusion matrix per classifier (rows = truth, columns = prediction)."""
     n = len(results)
-    fig, axes = plt.subplots(1, n, figsize=(2.6 * n, 2.7), squeeze=False)
+    fig, axes = plt.subplots(1, n, figsize=(2.6 * n, 2.7), squeeze=False, layout="constrained")
     for ax, (model, (y_true, y_pred)) in zip(axes[0], results.items(), strict=True):
         cm = evaluate.confusion_matrix(y_true, y_pred)
         ax.imshow(cm, cmap="Blues")
@@ -115,10 +126,17 @@ def importance_bars(tables: dict, value: str = "importance", top: int = 12,
 
     xlabel: one axis label for every panel, or a function panel title -> label
     (panels can have different units, e.g. RMSE for Task A and F1 for Task B).
+    Panels are laid out in rows of at most three (two for four panels), so the figure
+    stays about a page wide however many models there are.
     """
     n = len(tables)
-    fig, axes = plt.subplots(1, n, figsize=(3.6 * n, 0.28 * top + 1.2), squeeze=False)
-    for ax, (panel, table) in zip(axes[0], tables.items(), strict=True):
+    ncols = 2 if n == 4 else min(n, 3)
+    nrows = math.ceil(n / ncols)
+    fig, axes = plt.subplots(nrows, ncols, figsize=(2.5 * ncols, (0.2 * top + 1.0) * nrows),
+                             squeeze=False, layout="constrained")
+    for ax in axes.flat[n:]:
+        ax.set_visible(False)
+    for ax, (panel, table) in zip(axes.flat[:n], tables.items(), strict=True):
         part = table.head(top).iloc[::-1]
         colors = ["tab:red" if v < 0 else "tab:blue" for v in part[value]]
         ax.barh(part["feature"].astype(str), part[value], color=colors)
@@ -128,7 +146,7 @@ def importance_bars(tables: dict, value: str = "importance", top: int = 12,
         label = xlabel(panel) if callable(xlabel) else xlabel
         if label:
             ax.set_xlabel(label, fontsize=8)
-    fig.suptitle(title, y=1.02)
+    fig.suptitle(title, fontsize=10)
     return _save(fig, out_dir, name)
 
 
@@ -144,6 +162,9 @@ def fit_time_scaling(rows: list[dict], out_dir: str = FIGURES_DIR,
         ax.plot(*zip(*pts, strict=True), marker="o", ms=3, lw=1.2, label=model)
     ax.set_xscale("log")
     ax.set_yscale("log")
+    sizes = sorted({r["n_train"] for r in rows})
+    ax.set_xticks(sizes, [f"{n:,}" for n in sizes], fontsize=7)
+    ax.xaxis.set_minor_formatter(NullFormatter())
     ax.set_xlabel("training rows")
     ax.set_ylabel("fit time (s)")
     ax.set_title("Fit time vs training-set size", fontsize=10)
