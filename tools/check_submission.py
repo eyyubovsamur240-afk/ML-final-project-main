@@ -6,7 +6,8 @@ Looks for the things the project statement penalises that a script can see:
   - an unfilled contribution_report.md,
   - unpinned dependencies in requirements.txt,
   - TODO stubs (`raise NotImplementedError("TODO ...")`) still left in src/,
-  - no results table in the report,
+  - no results table in the report, or a generated table/figure it uses that
+    is not in the repo (src.run_all writes them; they are git-ignored until final),
   - no slides PDF in presentation/ (warning only: the PDF is also on Moodle).
 
 Run from the repo root:
@@ -20,6 +21,7 @@ from __future__ import annotations
 
 import os
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -52,6 +54,28 @@ CONTRIB_TEMPLATE_MARKERS = [
     "2–4 sentences: what you designed",
 ]
 DASH_ROW = re.compile(r"^\s*\|(\s*-{3,}\s*\|)+\s*$")  # | --- | --- |  (any spacing)
+# Files report.tex pulls in: \input{..}, \includegraphics[..]{..} and the report's
+# \generatedtable{..} / \generatedfigure{..}{width} wrappers around them.
+INCLUDED_FILE = re.compile(
+    r"\\(?:input|generatedtable|generatedfigure|includegraphics(?:\[[^\]]*\])?)\{([^}#]+)\}")
+
+
+def _committed(path: Path) -> bool:
+    """Tracked by git and present (just present when this is not a git checkout).
+
+    Generated tables and figures are git-ignored, so a local run_all creates them
+    without putting them in the repo the graders clone.
+    """
+    if not path.exists():
+        return False
+    try:
+        git = subprocess.run(["git", "ls-files", "--error-unmatch", str(path)], cwd=ROOT,
+                             capture_output=True)
+    except FileNotFoundError:  # git not installed
+        return True
+    if git.returncode != 0 and b"not a git repository" in git.stderr.lower():
+        return True
+    return git.returncode == 0
 
 
 def _unfilled_rows(text: str) -> int:
@@ -88,6 +112,17 @@ def check() -> tuple[list[str], list[str]]:
                 f"`report/report.tex` has {placeholders} table cells still set to `---` "
                 "(write n/a for cells that don't apply, as the template does)"
             )
+        included = sorted(set(INCLUDED_FILE.findall(re.sub(r"(?<!\\)%.*", "", tex))))
+        missing = [f for f in included if not _committed(report.parent / f)]
+        if missing:
+            errors.append(
+                "`report/report.tex` uses generated files that are not in the repo: "
+                f"{', '.join(missing)} — run `python -m src.run_all`, then "
+                "`git add -f` them (see README)"
+            )
+        for f in included:
+            if f.endswith(".tex") and (report.parent / f).exists():
+                tex += (report.parent / f).read_text(encoding="utf-8")
         if not re.search(r"\\label\{tab:(?!data\})[^}]*\}", tex):
             warnings.append(
                 "`report/report.tex`: no results table found (no `\\label{tab:...}` "

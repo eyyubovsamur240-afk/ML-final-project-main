@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -68,3 +70,28 @@ def test_no_dataset_or_large_files_tracked():
         pytest.skip("not a git checkout (e.g. a downloaded ZIP)")
     problems = {f: check_no_data.problems_for(f) for f in check_no_data.tracked_files()}
     assert {f: p for f, p in problems.items() if p} == {}
+
+
+def test_submission_check_wants_the_report_tables_committed(tmp_path: Path, monkeypatch):
+    from tools import check_submission
+
+    if shutil.which("git") is None:
+        pytest.skip("git is not installed")
+    (tmp_path / "report" / "tables").mkdir(parents=True)
+    (tmp_path / "report" / "report.tex").write_text(
+        "\\newcommand{\\generatedtable}[1]{\\IfFileExists{#1}{\\input{#1}}{}}\n"
+        "% \\input{tables/old.tex} is commented out\n"
+        "\\generatedtable{tables/headline.tex}\n", encoding="utf-8")
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    monkeypatch.setattr(check_submission, "ROOT", tmp_path)
+
+    def report_problems():
+        errors, warnings = check_submission.check()
+        return [p for p in errors + warnings if "report.tex" in p]
+
+    assert any("tables/headline.tex" in p for p in report_problems()), "not generated yet"
+    table = tmp_path / "report" / "tables" / "headline.tex"
+    table.write_text("\\begin{table}\\label{tab:results}\\end{table}\n", encoding="utf-8")
+    assert any("not in the repo" in p for p in report_problems()), "generated, not committed"
+    subprocess.run(["git", "add", "-f", str(table)], cwd=tmp_path, check=True)
+    assert report_problems() == [], "committed, and its \\label counts as the results table"
