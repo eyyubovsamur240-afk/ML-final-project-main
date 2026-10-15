@@ -172,3 +172,29 @@ def test_compare_prints_one_row_per_model(capsys):
     printed = capsys.readouterr().out
     assert table in printed
     assert printed.count("\n") >= 4 and "mae" in table
+
+
+def test_bad_inputs_raise_instead_of_giving_a_plausible_number():
+    y = [0, 1, 1, 0]
+    with pytest.raises(ValueError, match="NaN"):
+        evaluate.roc_auc(y, [np.nan, 0.9, 0.8, 0.3])
+    with pytest.raises(ValueError, match="NaN"):
+        evaluate.roc_curve(y, [np.nan, 0.9, 0.8, 0.3])
+    with pytest.raises(ValueError, match="length"):
+        evaluate.roc_curve(y, [0.1, 0.9])
+    with pytest.raises(ValueError, match="NaN"):
+        evaluate.kfold_indices(6, k=2, stratify=[0, 1, np.nan, 0, 1, 1])
+
+
+def test_model_scores_is_none_while_the_score_method_is_a_stub():
+    class Stub:
+        def predict_proba(self, X):
+            raise NotImplementedError("TODO: class shares")
+
+    class Broken:
+        def predict_proba(self, X):
+            raise NotImplementedError("a real error, not a TODO stub")
+
+    assert evaluate.model_scores(Stub(), np.zeros((2, 1))) is None
+    with pytest.raises(NotImplementedError):
+        evaluate.model_scores(Broken(), np.zeros((2, 1)))

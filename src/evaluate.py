@@ -134,6 +134,16 @@ def _average_ranks(x) -> np.ndarray:
     return ranks
 
 
+def _labels_and_scores(y_true, scores, positive):
+    y_true = np.asarray(y_true).ravel() == positive
+    scores = np.asarray(scores, dtype=float).ravel()
+    if y_true.shape != scores.shape:
+        raise ValueError(f"length mismatch: {len(y_true)} labels vs {len(scores)} scores")
+    if np.isnan(scores).any():
+        raise ValueError("scores contain NaN")
+    return y_true, scores
+
+
 def roc_auc(y_true, scores, positive=1) -> float:
     """
     AUC from decision scores (e.g. SVM margins or tree probabilities).
@@ -141,10 +151,7 @@ def roc_auc(y_true, scores, positive=1) -> float:
     scores higher than a random standard one, ties counting one half.
     Returns nan when only one class is present (AUC is undefined then).
     """
-    y_true = np.asarray(y_true).ravel() == positive
-    scores = np.asarray(scores, dtype=float).ravel()
-    if y_true.shape != scores.shape:
-        raise ValueError(f"length mismatch: {len(y_true)} labels vs {len(scores)} scores")
+    y_true, scores = _labels_and_scores(y_true, scores, positive)
     n_pos = int(y_true.sum())
     n_neg = len(y_true) - n_pos
     if n_pos == 0 or n_neg == 0:
@@ -155,8 +162,7 @@ def roc_auc(y_true, scores, positive=1) -> float:
 
 def roc_curve(y_true, scores, positive=1):
     """Return (fpr, tpr, thresholds), one point per distinct score, from (0, 0) to (1, 1)."""
-    y_true = np.asarray(y_true).ravel() == positive
-    scores = np.asarray(scores, dtype=float).ravel()
+    y_true, scores = _labels_and_scores(y_true, scores, positive)
     n_pos = int(y_true.sum())
     n_neg = len(y_true) - n_pos
     if n_pos == 0 or n_neg == 0:
@@ -189,12 +195,20 @@ def classification_metrics(y_true, y_pred, scores=None) -> dict:
 
 
 def model_scores(model, X):
-    """Continuous "how premium" scores: decision_function, else predict_proba[:, 1], else None."""
-    if hasattr(model, "decision_function"):
-        return np.asarray(model.decision_function(X), dtype=float).ravel()
-    if hasattr(model, "predict_proba"):
-        proba = np.asarray(model.predict_proba(X), dtype=float)
-        return proba[:, -1] if proba.ndim == 2 else proba.ravel()
+    """Continuous "how premium" scores: decision_function, else predict_proba[:, 1], else None.
+
+    None also when that method is still a TODO stub (NotImplementedError("TODO ...")),
+    so a model is scored on its predictions while its scores are unfinished.
+    """
+    try:
+        if hasattr(model, "decision_function"):
+            return np.asarray(model.decision_function(X), dtype=float).ravel()
+        if hasattr(model, "predict_proba"):
+            proba = np.asarray(model.predict_proba(X), dtype=float)
+            return proba[:, -1] if proba.ndim == 2 else proba.ravel()
+    except NotImplementedError as exc:
+        if not str(exc).startswith("TODO"):
+            raise
     return None
 
 
@@ -212,12 +226,14 @@ def kfold_indices(n: int, k: int = 5, seed: int = 42, stratify=None):
     groups = np.zeros(n, dtype=int) if stratify is None else np.asarray(stratify).ravel()
     if len(groups) != n:
         raise ValueError("stratify must have one label per row")
-    fold_of = np.empty(n, dtype=int)
+    fold_of = np.full(n, -1)
     offset = 0  # continue the round-robin across classes so totals stay balanced
     for value in np.unique(groups):
         rows = rng.permutation(np.flatnonzero(groups == value))
         fold_of[rows] = (offset + np.arange(len(rows))) % k
         offset += len(rows)
+    if (fold_of < 0).any():
+        raise ValueError("stratify has labels that never compare equal (e.g. NaN)")
     every_row = np.arange(n)
     return [(every_row[fold_of != f], every_row[fold_of == f]) for f in range(k)]
 
@@ -374,15 +390,19 @@ def latex_escape(text: str) -> str:
 
 
 def latex_table(rows: list[dict], columns: list[str], headers: list[str], caption: str,
-                label: str, digits: int = 3, align: str | None = None) -> str:
-    """A booktabs table (same style as report/report.tex) ready for \\input{...}."""
+                label: str, digits: int = 3, align: str | None = None, wide: bool = False) -> str:
+    """A booktabs table (same style as report/report.tex) ready for \\input{...}.
+
+    wide=True spans both columns of the two-column report (table*).
+    """
     align = align or "l" + "c" * (len(columns) - 1)
-    out = [r"\begin{table}[t]", r"  \centering", rf"  \caption{{{caption}}}",
+    env = "table*" if wide else "table"
+    out = [rf"\begin{{{env}}}[t]", r"  \centering", rf"  \caption{{{caption}}}",
            rf"  \label{{{label}}}", r"  \footnotesize",
            rf"  \begin{{tabular}}{{@{{}}{align}@{{}}}}", r"    \toprule",
            "    " + " & ".join(headers) + r" \\", r"    \midrule"]
     for row in rows:
         out.append("    " + " & ".join(format_cell(row.get(c), digits, latex=True) for c in columns)
                    + r" \\")
-    out += [r"    \bottomrule", r"  \end{tabular}", r"\end{table}"]
+    out += [r"    \bottomrule", r"  \end{tabular}", rf"\end{{{env}}}"]
     return "\n".join(out) + "\n"
