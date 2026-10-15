@@ -141,7 +141,12 @@ def test_run_all_with_the_team_models(tmp_path, monkeypatch):
             if not row["ours"]:
                 assert row["status"] == "ok", "baselines always run"
     assert (tmp_path / "results" / "metrics.json").exists()
-    assert (tmp_path / "tables" / "task_a.tex").exists()
+    for task, table in (("task_a", "task_a.tex"), ("task_b", "task_b.tex"),
+                        ("task_b", "headline.tex")):
+        tex = (tmp_path / "tables" / table).read_text(encoding="utf-8")
+        for row in report[task]:
+            if row["status"] != "ok":
+                assert row["model"] in tex, f"{table} names the model it leaves out"
 
 
 def test_run_all_with_stand_in_models_exercises_every_step(tmp_path, monkeypatch):
@@ -195,6 +200,7 @@ def test_run_all_with_stand_in_models_exercises_every_step(tmp_path, monkeypatch
     tex = (tmp_path / "tables" / "headline.tex").read_text(encoding="utf-8")
     assert r"\label{tab:results}" in tex and r"\begin{table}" in tex
     assert tex.count("& n/a &") == 3, "the SVMs have no Task A result"
+    assert "Not implemented yet" not in tex, "every model ran"
     tex = (tmp_path / "tables" / "task_b.tex").read_text(encoding="utf-8")
     assert r"\label{tab:task-b}" in tex and "Ours: SVM (Pegasos)" in tex
     assert r"\begin{table*}" in tex and "3-fold" in tex

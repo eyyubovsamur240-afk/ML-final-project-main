@@ -479,26 +479,48 @@ def _finite(obj):
     return obj
 
 
-def _captions(config: dict) -> dict:
-    """Table captions that say how the numbers were produced."""
+def _captions(config: dict, skipped: dict | None = None) -> dict:
+    """Table captions that say how the numbers were produced.
+
+    skipped = {"A": [...], "B": [...]}: models still "not implemented yet", which have
+    no row in that task's table; the captions name them so no model silently disappears.
+    """
     prefix = "SMOKE RUN (training split subsampled to 3,000 rows). " if config["fast"] else ""
     cv = (f"CV = {config['folds']}-fold mean $\\pm$ std on the training split; "
           if config["folds"] >= 2 else "")
     test = (f"test = held-out test split, with a 95\\% bootstrap interval "
             f"({config['n_boot']:,} resamples).")
+    skipped = {task: [evaluate.latex_escape(name) for name in names]
+               for task, names in (skipped or {}).items()}
+
+    def not_shown(task):
+        names = skipped.get(task, [])
+        return f" Not implemented yet, so not shown: {', '.join(names)}." if names else ""
+
+    by_model = {}
+    for task in ("A", "B"):
+        for name in skipped.get(task, []):
+            by_model.setdefault(name, []).append(task)
+    headline_skipped = "; ".join(f"{name} (Task {' and '.join(tasks)})"
+                                 for name, tasks in by_model.items())
+    floor_b = ("The trivial floor predicts the training majority class for every listing, so "
+               "its premium-class precision, recall and F1 are 0 when that class is standard.")
     return {
         "A": f"{prefix}Task A, regression on log(price). {cv}{test} Median APE = median of "
-             "$|$predicted $-$ actual$|$ / actual price in AZN, as a fraction (0.12 = 12\\%).",
+             "$|$predicted $-$ actual$|$ / actual price in AZN, as a fraction (0.12 = 12\\%)."
+             + not_shown("A"),
         "B": f"{prefix}Task B, premium vs standard (premium = above the training median "
              f"price). Precision, recall and F1 are for the premium class. {cv}{test} "
-             "n/a = not available (e.g. no AUC for a model without continuous scores yet).",
+             f"{floor_b} n/a = not available (e.g. no AUC for a model without continuous "
+             "scores yet)." + not_shown("B"),
         "timing": f"{prefix}Fit time on the training split and predict time on the test split "
                   "(seconds, one run).",
         "headline": f"{prefix}Headline results on the held-out test split: Task A RMSE on "
                     "log(price), Task B F1 for the premium class, each with a 95\\% bootstrap "
                     f"interval ({config['n_boot']:,} resamples). Tables~\\ref{{tab:task-a}} and "
                     "\\ref{tab:task-b} add the cross-validated scores and the other metrics. "
-                    "n/a = no result for that task (the SVMs are classifiers only).",
+                    "n/a = no result for that task (the SVMs are classifiers only)."
+                    + (f" Not implemented yet: {headline_skipped}." if headline_skipped else ""),
     }
 
 
@@ -513,7 +535,9 @@ def write_outputs(report: dict, results_dir: str, tables_dir: str) -> list[str]:
         json.dump(plain, f, indent=2, allow_nan=False)
     paths.append(path)
 
-    captions = _captions(report["config"])
+    skipped = {task: [r["model"] for r in report[f"task_{task.lower()}"]
+                      if r.get("status") != "ok"] for task in ("A", "B")}
+    captions = _captions(report["config"], skipped)
     title = "# Results" + (" (SMOKE RUN, --fast)" if report["config"]["fast"] else "")
     md = [f"{title}, seed {SEED}", ""]
     for task, name in (("headline", "Headline: both tasks, test split"),
