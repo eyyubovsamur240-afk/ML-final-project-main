@@ -297,41 +297,51 @@ def _is_missing(value) -> bool:
     return value is None or (isinstance(value, float) and math.isnan(value))
 
 
+def _num(x: float, digits: int) -> str:
+    text = f"{float(x):.{digits}f}"
+    return text[1:] if text.startswith("-") and float(text) == 0 else text  # no "-0.000"
+
+
 def format_cell(value, digits: int = 3, latex: bool = False) -> str:
     """One table cell: numbers rounded, {"mean","std"} as mean ± std, {"value","lo","hi"} as value [lo, hi]."""
     pm = r" $\pm$ " if latex else " ± "
     if _is_missing(value):
         return "n/a"
     if isinstance(value, dict) and "mean" in value:
-        return f"{value['mean']:.{digits}f}{pm}{value['std']:.{digits}f}"
+        return f"{_num(value['mean'], digits)}{pm}{_num(value['std'], digits)}"
     if isinstance(value, dict) and "value" in value:
-        return f"{value['value']:.{digits}f} [{value['lo']:.{digits}f}, {value['hi']:.{digits}f}]"
+        return (f"{_num(value['value'], digits)} "
+                f"[{_num(value['lo'], digits)}, {_num(value['hi'], digits)}]")
     if isinstance(value, bool):
         return str(value)
     if isinstance(value, (int, np.integer)):
         return f"{int(value):,}"
     if isinstance(value, (float, np.floating)):
-        return f"{float(value):.{digits}f}"
+        return _num(value, digits)
     text = str(value)
     return latex_escape(text) if latex else text
 
 
 def format_table(rows: list[dict], columns: list[str], headers: list[str] | None = None,
                  title: str = "", digits: int = 3) -> str:
-    """Plain-text table: one row per dict, one column per key in `columns`."""
+    """Plain-text table: one row per dict, one column per key in `columns`.
+
+    Text columns are left-aligned, number columns right-aligned.
+    """
     headers = headers or columns
     body = [[format_cell(row.get(col), digits) for col in columns] for row in rows]
     widths = [max(len(h), *(len(r[i]) for r in body)) if body else len(h)
               for i, h in enumerate(headers)]
-    line = "  ".join("-" * w for w in widths)
+    is_text = [all(isinstance(row.get(col), str) or _is_missing(row.get(col)) for row in rows)
+               for col in columns]
+
+    def align(cells):
+        return "  ".join(c.ljust(w) if text else c.rjust(w)
+                         for c, w, text in zip(cells, widths, is_text, strict=True)).rstrip()
+
     lines = [title] if title else []
-    head = [headers[0].ljust(widths[0])] + [h.rjust(w) for h, w in
-                                          zip(headers[1:], widths[1:], strict=True)]
-    lines.append("  ".join(head))
-    lines.append(line)
-    for r in body:
-        cells = [r[0].ljust(widths[0])] + [c.rjust(w) for c, w in zip(r[1:], widths[1:], strict=True)]
-        lines.append("  ".join(cells))
+    lines += [align(headers), "  ".join("-" * w for w in widths)]
+    lines += [align(r) for r in body]
     return "\n".join(lines)
 
 

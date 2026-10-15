@@ -303,7 +303,9 @@ def scaling_study(task: str, specs: list[ModelSpec], data: dict, done: dict,
             continue
         for frac in fractions:
             idx = np.sort(order[: max(50, int(frac * len(y)))])
-            _, seconds = evaluate.timed(spec.make().fit, X[idx], y[idx])
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")  # already reported in the model's row
+                _, seconds = evaluate.timed(spec.make().fit, X[idx], y[idx])
             rows.append({"task": task, "model": spec.name, "n_train": len(idx),
                          "fit_seconds": seconds})
         rows.append({"task": task, "model": spec.name, "n_train": len(y),
@@ -315,6 +317,7 @@ def scaling_study(task: str, specs: list[ModelSpec], data: dict, done: dict,
 def headline_rows(rows_a: list[dict], rows_b: list[dict]) -> list[dict]:
     """One row per model name across both tasks: CV mean ± std and test value [95% CI]."""
     names = list(dict.fromkeys([r["model"] for r in rows_a] + [r["model"] for r in rows_b]))
+    names = [n for n in names if n != TRIVIAL] + [n for n in names if n == TRIVIAL]  # floor last
     by_a = {r["model"]: r for r in rows_a if r.get("status") == "ok"}
     by_b = {r["model"]: r for r in rows_b if r.get("status") == "ok"}
     table = []

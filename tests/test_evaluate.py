@@ -158,6 +158,10 @@ def test_tables_format_mean_std_and_missing_values():
             {"model": "sklearn", "rmse": 0.25, "f1": 0.9}]
     text = evaluate.format_table(rows, ["model", "rmse", "f1"])
     assert "0.235 ± 0.012" in text and "n/a" in text
+    header, rule, first, second = text.splitlines()
+    assert first.startswith("Ours: tree_1") and second.startswith("sklearn ")
+    assert first.endswith("n/a") and second.endswith("0.900"), "numbers are right-aligned"
+    assert evaluate.format_cell(-0.0001) == "0.000", "no negative zero"
     tex = evaluate.latex_table(rows, ["model", "rmse", "f1"], ["Model", "RMSE", "F1"],
                                caption="Results", label="tab:x")
     assert r"0.235 $\pm$ 0.012" in tex and r"Ours: tree\_1" in tex and r"\label{tab:x}" in tex
