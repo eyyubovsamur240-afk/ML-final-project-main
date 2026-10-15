@@ -62,6 +62,45 @@ pip install -r requirements.txt
 python -m src.run_all
 ```
 
+## Reproducing the results
+One command produces every number, table and figure from a clean checkout:
+
+```bash
+# 1. the dataset (public on Kaggle; no account needed for this download link)
+curl -L -o data/binaaz.zip \
+  https://www.kaggle.com/api/v1/datasets/download/sehriyarmemmedli/binaaz-sale-project
+unzip -o data/binaaz.zip -d data/            # -> data/house_sale.csv
+
+# 2. everything else
+python -m src.run_all            # full run
+python -m src.run_all --fast     # smoke run: 3,000 training rows, 3 folds (about a minute)
+```
+
+`run_all` cleans and splits the data (seed 42), trains every model on the
+training split, and for each one reports 5-fold cross-validation on the
+training split (mean ± std), validation and test metrics with 95% bootstrap
+intervals, and fit/predict times:
+
+| | Task A: log(price) | Task B: premium vs standard |
+|---|---|---|
+| Ours | decision tree | decision tree, Pegasos SVM |
+| scikit-learn, same hyperparameters | `DecisionTreeRegressor` | `DecisionTreeClassifier`, `SGDClassifier` (hinge), `LinearSVC` |
+| Floor | predict the training mean | predict the majority class |
+
+It then writes:
+
+- `results/metrics.json`: every number (including per-fold scores and error breakdowns)
+- `results/results.md`: the comparison and timing tables as text
+- `report/tables/results.tex`, `report/tables/timing.tex`: tables for the report (`\input{tables/results.tex}`)
+- `report/figures/eval_*.pdf`: predicted vs actual, error by price band and by district
+  coverage, confusion matrices, ROC curves, error vs distance from the tier threshold,
+  permutation importance, SVM weights, fit time vs training-set size
+
+These outputs are git-ignored: they are regenerated, never edited by hand. A model
+whose code is still a `TODO` stub is listed as "not implemented yet" and skipped.
+The final hyperparameters live at the top of `src/run_all.py` (`TREE_REGRESSION`,
+`TREE_CLASSIFICATION`, `SVM`) and are chosen on the validation split only.
+
 ## Team workflow
 How we branch, review, test and submit: **[CONTRIBUTING.md](CONTRIBUTING.md)**.
 In short: branch → PR → green CI + one teammate's approval → squash-merge.

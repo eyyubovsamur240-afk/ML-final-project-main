@@ -19,6 +19,7 @@ report/figures/*.png
 *.aux
 *.out
 results/
+report/tables/
 *.csv.gz
 
 # --- OS / editor cruft ---
