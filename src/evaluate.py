@@ -325,7 +325,9 @@ def format_table(rows: list[dict], columns: list[str], headers: list[str] | None
               for i, h in enumerate(headers)]
     line = "  ".join("-" * w for w in widths)
     lines = [title] if title else []
-    lines.append("  ".join(h.ljust(w) for h, w in zip(headers, widths, strict=True)))
+    head = [headers[0].ljust(widths[0])] + [h.rjust(w) for h, w in
+                                          zip(headers[1:], widths[1:], strict=True)]
+    lines.append("  ".join(head))
     lines.append(line)
     for r in body:
         cells = [r[0].ljust(widths[0])] + [c.rjust(w) for c, w in zip(r[1:], widths[1:], strict=True)]
