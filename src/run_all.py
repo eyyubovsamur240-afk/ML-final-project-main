@@ -11,11 +11,14 @@ What it does:
   2. Task A, log(price): our decision tree vs DecisionTreeRegressor vs the train mean
   3. Task B, price tier: our decision tree and our Pegasos SVM vs scikit-learn's
      DecisionTreeClassifier, SGDClassifier (hinge) and LinearSVC, and the majority class
-  4. every model: k-fold CV on the training split (mean ± std), validation and
-     test metrics with 95% bootstrap intervals, fit and predict times (Problem 5)
-  5. error analysis, feature importance, fit-time scaling, figures (Problem 6)
+  4. every model: k-fold CV on the training split (mean ± std), validation
+     metrics, test metrics with 95% bootstrap intervals, fit and predict times,
+     and how closely our tree reproduces scikit-learn's (Problem 5)
+  5. error analysis, feature importance, fit-time scaling, figures (Problem 6),
+     plus the data-exploration figures from src/eda.py when it exists
   6. writes results/metrics.json, results/results.md, report/tables/*.tex and
      report/figures/eval_*.pdf, and prints the comparison tables
+     (--fast writes to results/fast/, report/tables/fast/, report/figures/fast/)
 
 A model whose code is still a TODO stub is reported as "not implemented yet"
 and skipped, so this runs end to end at every stage of the project.
@@ -26,7 +29,9 @@ Everything is seeded (data_prep.SEED): two runs give identical numbers
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
+import math
 import os
 import warnings
 from collections import Counter
@@ -80,8 +85,15 @@ def task_a_models() -> list[ModelSpec]:
     ]
 
 
-def task_b_models(n_train: int) -> list[ModelSpec]:
-    epochs = baselines.epochs_for(SVM["n_iters"], n_train)
+def task_b_models() -> list[ModelSpec]:
+    # SGD's epochs and LinearSVC's C depend on the number of fit rows, so they are
+    # built at fit time: matched on the full split, on every CV fold and in the scaling study.
+    def sgd(n):
+        return baselines.sk_sgd_hinge(SVM["lambda_"], baselines.epochs_for(SVM["n_iters"], n), SEED)
+
+    def linear_svc(n):
+        return baselines.sk_linear_svc(SVM["lambda_"], n, SEED)
+
     return [
         ModelSpec(OUR_TREE, lambda: DecisionTree(task="classification", random_state=SEED,
                                                  **TREE_CLASSIFICATION), ours=True),
@@ -89,8 +101,8 @@ def task_b_models(n_train: int) -> list[ModelSpec]:
         ModelSpec(OUR_SVM, lambda: baselines.StandardScaled(PegasosSVM(random_state=SEED, **SVM)),
                   ours=True),
         ModelSpec(SK_TREE, lambda: baselines.sk_tree_classifier(TREE_CLASSIFICATION, SEED)),
-        ModelSpec(SK_SGD, lambda: baselines.sk_sgd_hinge(SVM["lambda_"], epochs, SEED)),
-        ModelSpec(SK_LINEAR_SVC, lambda: baselines.sk_linear_svc(SVM["lambda_"], n_train, SEED)),
+        ModelSpec(SK_SGD, lambda: baselines.SizedToFitData(sgd)),
+        ModelSpec(SK_LINEAR_SVC, lambda: baselines.SizedToFitData(linear_svc)),
         ModelSpec(TRIVIAL, baselines.MajorityClassifier),
     ]
 
@@ -156,12 +168,20 @@ def run_model(spec: ModelSpec, task: str, data: dict, folds: int, n_boot: int) -
     """Fit on train, score on validation and test, cross-validate on train.
 
     Returns (metrics for metrics.json, in-memory outputs for the analysis step).
-    Warnings raised while fitting (e.g. a ConvergenceWarning) are recorded in the
-    row instead of being printed in the middle of the progress output.
+    A model that hits a TODO stub anywhere (fit, predict, ...) is reported as
+    "not implemented yet". Warnings raised meanwhile (e.g. a ConvergenceWarning)
+    are recorded in the row instead of being printed in the progress output.
     """
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
-        row, outputs = _fit_and_score(spec, task, data, folds, n_boot)
+        try:
+            row, outputs = _fit_and_score(spec, task, data, folds, n_boot)
+        except NotImplementedError as exc:
+            if not _is_todo(exc):
+                raise
+            row = {"model": spec.name, "ours": spec.ours, "status": "not implemented yet",
+                   "reason": str(exc)}
+            outputs = {}
     if caught:
         row["warnings"] = _summarise_warnings(caught)
     return row, outputs
@@ -174,13 +194,7 @@ def _fit_and_score(spec: ModelSpec, task: str, data: dict, folds: int,
     score = score_regression if task == "A" else score_classification
     row = {"model": spec.name, "ours": spec.ours}
     model = spec.make()
-    try:
-        _, fit_s = evaluate.timed(model.fit, X["train"], y["train"])
-    except NotImplementedError as exc:
-        if not _is_todo(exc):
-            raise
-        return {**row, "status": "not implemented yet", "reason": str(exc)}, {}
-
+    _, fit_s = evaluate.timed(model.fit, X["train"], y["train"])
     pred_test, predict_s = evaluate.timed(model.predict, X["test"])
     scores_test = evaluate.model_scores(model, X["test"]) if task == "B" else None
     row.update(status="ok", fit_seconds=fit_s, predict_seconds=predict_s,
@@ -240,7 +254,7 @@ def analyse(data: dict, outputs_a: dict, outputs_b: dict, perm_repeats: int) -> 
     bands = error_analysis.price_band(test["price"])
     coverage = error_analysis.district_coverage(test["location"], train["location"])
     margin = error_analysis.threshold_margin(test["price"], data["threshold"])
-    out: dict = {"task_a": {}, "task_b": {}, "importance": {}, "svm_weights": {}}
+    out: dict = {"task_a": {}, "task_b": {}, "importance": {}, "svm_weights": {}, "notes": []}
 
     for name, o in outputs_a.items():
         if name == TRIVIAL:
@@ -283,6 +297,9 @@ def analyse(data: dict, outputs_a: dict, outputs_b: dict, perm_repeats: int) -> 
             if getattr(model, "feature_importances_", None) is not None:
                 entry["impurity"] = error_analysis.grouped_importances(
                     model.feature_importances_, groups)
+            elif name == OUR_TREE:
+                out["notes"].append(f"{task}: {OUR_TREE} has no feature_importances_, so its "
+                                    "impurity-decrease importance is missing (Problem 6)")
             out["importance"][f"{task}: {name}"] = entry
             w = _linear_weights(model)
             if w is not None and len(w) == len(data["feature_names"]):
@@ -290,58 +307,106 @@ def analyse(data: dict, outputs_a: dict, outputs_b: dict, perm_repeats: int) -> 
     return out
 
 
-def scaling_study(task: str, specs: list[ModelSpec], data: dict, done: dict,
-                  fractions=(0.125, 0.25, 0.5)) -> list[dict]:
-    """Fit time vs training-set size for the implemented, non-trivial models (Problem 5c)."""
+def _tree_size(model) -> dict:
+    """Depth and leaf count, if the model exposes scikit-learn's get_depth/get_n_leaves."""
+    out = {}
+    for attr in ("get_depth", "get_n_leaves"):
+        method = getattr(model, attr, None)
+        try:
+            out[attr[4:]] = int(method()) if callable(method) else None
+        except NotImplementedError as exc:
+            if not _is_todo(exc):
+                raise
+            out[attr[4:]] = None
+    return out
+
+
+def tree_vs_sklearn(outputs_a: dict, outputs_b: dict) -> dict:
+    """How closely our tree reproduces scikit-learn's with the same hyperparameters (Problem 5a).
+
+    Both are CART with the same settings on the same rows, so most test predictions
+    should match; the rest come from tie-breaking between equally good splits and
+    from where the threshold sits between two feature values.
+    """
+    out = {}
+    for task, outputs in (("task_a", outputs_a), ("task_b", outputs_b)):
+        ours, sk = outputs.get(OUR_TREE), outputs.get(SK_TREE)
+        if ours is None or sk is None:
+            continue
+        if task == "task_a":
+            diff = np.abs(ours["pred"] - sk["pred"])
+            entry = {"mean_abs_diff_log": float(diff.mean()), "max_abs_diff_log": float(diff.max()),
+                     "share_identical": float(np.mean(diff < 1e-9))}
+        else:
+            entry = {"share_identical": float(np.mean(ours["pred"] == sk["pred"]))}
+        entry["ours"] = _tree_size(ours["model"])
+        entry["sklearn"] = _tree_size(sk["model"])
+        out[task] = entry
+    return out
+
+
+def scaling_study(task: str, specs: list[ModelSpec], data: dict, names: set,
+                  fractions=(0.125, 0.25, 0.5, 1.0), repeats: int = 3) -> list[dict]:
+    """Fit time vs training-set size for the given implemented models (Problem 5c).
+
+    Each point is the median of `repeats` fits on the same nested subsample,
+    after one untimed warm-up fit, so every point is measured the same way.
+    """
     target = "log_price" if task == "A" else "tier"
     X, y = data["X"]["train"], data[target]["train"]
-    rng = np.random.default_rng(SEED)
-    order = rng.permutation(len(y))
+    order = np.random.default_rng(SEED).permutation(len(y))
+    subsets = [np.sort(order[: max(50, int(frac * len(y)))]) for frac in fractions]
     rows = []
-    for spec in specs:
-        if spec.name == TRIVIAL or spec.name not in done:
-            continue
-        for frac in fractions:
-            idx = np.sort(order[: max(50, int(frac * len(y)))])
-            with warnings.catch_warnings():
-                warnings.simplefilter("ignore")  # already reported in the model's row
-                _, seconds = evaluate.timed(spec.make().fit, X[idx], y[idx])
-            rows.append({"task": task, "model": spec.name, "n_train": len(idx),
-                         "fit_seconds": seconds})
-        rows.append({"task": task, "model": spec.name, "n_train": len(y),
-                     "fit_seconds": done[spec.name]})
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")  # already reported in each model's row
+        for spec in specs:
+            if spec.name == TRIVIAL or spec.name not in names:
+                continue
+            spec.make().fit(X[subsets[0]], y[subsets[0]])  # warm-up
+            for idx in subsets:
+                seconds = [evaluate.timed(spec.make().fit, X[idx], y[idx])[1]
+                           for _ in range(repeats)]
+                rows.append({"task": task, "model": spec.name, "n_train": len(idx),
+                             "fit_seconds": float(np.median(seconds))})
     return rows
 
 
 # --- 6. Output ----------------------------------------------------------------------
-def headline_rows(rows_a: list[dict], rows_b: list[dict]) -> list[dict]:
-    """One row per model name across both tasks: CV mean ± std and test value [95% CI]."""
-    names = list(dict.fromkeys([r["model"] for r in rows_a] + [r["model"] for r in rows_b]))
-    names = [n for n in names if n != TRIVIAL] + [n for n in names if n == TRIVIAL]  # floor last
-    by_a = {r["model"]: r for r in rows_a if r.get("status") == "ok"}
-    by_b = {r["model"]: r for r in rows_b if r.get("status") == "ok"}
+def result_rows(rows: list[dict], task: str) -> list[dict]:
+    """The results table of one task: CV mean ± std, test value [95% CI] and the other
+    test metrics, one row per implemented model, the trivial floor last."""
+    ok = [r for r in rows if r.get("status") == "ok"]
+    ok = [r for r in ok if r["model"] != TRIVIAL] + [r for r in ok if r["model"] == TRIVIAL]
     table = []
-    for name in names:
-        a, b = by_a.get(name), by_b.get(name)
-        if a is None and b is None:
-            continue
-        table.append({
-            "model": name,
-            "a_cv_rmse": a["cv"]["rmse_log"] if a and "cv" in a else None,
-            "a_test_rmse": a["test_ci"]["rmse_log"] if a else None,
-            "a_test_r2": a["test"]["r2_log"] if a else None,
-            "a_test_mape": a["test"]["median_ape"] if a else None,
-            "b_cv_f1": b["cv"]["f1"] if b and "cv" in b else None,
-            "b_test_f1": b["test_ci"]["f1"] if b else None,
-            "b_test_auc": b["test"].get("roc_auc") if b else None,
-        })
+    for r in ok:
+        test, cv = r["test"], r.get("cv", {})
+        if task == "A":
+            table.append({"model": r["model"], "cv_rmse": cv.get("rmse_log"),
+                          "test_rmse": r["test_ci"]["rmse_log"], "test_mae": test["mae_log"],
+                          "test_r2": test["r2_log"], "test_mape": test["median_ape"]})
+        else:
+            table.append({"model": r["model"], "cv_f1": cv.get("f1"), "test_f1": r["test_ci"]["f1"],
+                          "test_precision": test["precision"], "test_recall": test["recall"],
+                          "test_accuracy": test["accuracy"], "test_auc": test.get("roc_auc")})
     return table
 
 
-HEADLINE_COLUMNS = ["model", "a_cv_rmse", "a_test_rmse", "a_test_r2", "a_test_mape",
-                    "b_cv_f1", "b_test_f1", "b_test_auc"]
-HEADLINE_HEADERS = ["Model", "A: CV RMSE(log)", "A: test RMSE(log) [95% CI]", "A: test R2(log)",
-                    "A: test median APE", "B: CV F1", "B: test F1 [95% CI]", "B: test AUC"]
+TABLE_COLUMNS = {
+    "A": ["model", "cv_rmse", "test_rmse", "test_mae", "test_r2", "test_mape"],
+    "B": ["model", "cv_f1", "test_f1", "test_precision", "test_recall", "test_accuracy",
+          "test_auc"],
+}
+TABLE_HEADERS = {
+    "A": ["Model", "CV RMSE(log)", "test RMSE(log) [95% CI]", "test MAE(log)", "test R2(log)",
+          "test median APE"],
+    "B": ["Model", "CV F1", "test F1 [95% CI]", "test precision", "test recall", "test accuracy",
+          "test AUC"],
+}
+LATEX_HEADERS = {
+    "A": ["Model", "CV RMSE", "Test RMSE [95\\% CI]", "Test MAE", "Test $R^2$",
+          "Median APE"],
+    "B": ["Model", "CV F1", "Test F1 [95\\% CI]", "Precision", "Recall", "Accuracy", "AUC"],
+}
 
 
 def timing_rows(rows_a: list[dict], rows_b: list[dict]) -> list[dict]:
@@ -359,11 +424,41 @@ def _jsonable(obj):
     """numpy / pandas values -> plain JSON types (used as json.dump's default)."""
     if hasattr(obj, "to_dict") and hasattr(obj, "columns"):
         return obj.to_dict(orient="records")
+    if hasattr(obj, "to_dict"):
+        return obj.to_dict()
     if isinstance(obj, np.generic):
         return obj.item()
     if isinstance(obj, np.ndarray):
         return obj.tolist()
     raise TypeError(f"not JSON serialisable: {type(obj).__name__}")
+
+
+def _finite(obj):
+    """NaN / inf -> None, so metrics.json is strict JSON (e.g. an AUC that is undefined)."""
+    if isinstance(obj, float) and not math.isfinite(obj):
+        return None
+    if isinstance(obj, dict):
+        return {key: _finite(value) for key, value in obj.items()}
+    if isinstance(obj, list):
+        return [_finite(value) for value in obj]
+    return obj
+
+
+def _captions(config: dict) -> dict:
+    """Table captions that say how the numbers were produced."""
+    prefix = "SMOKE RUN (training split subsampled to 3,000 rows). " if config["fast"] else ""
+    cv = (f"CV = {config['folds']}-fold mean $\\pm$ std on the training split; "
+          if config["folds"] >= 2 else "")
+    test = (f"test = held-out test split, with a 95\\% bootstrap interval "
+            f"({config['n_boot']:,} resamples).")
+    return {
+        "A": f"{prefix}Task A, regression on log(price). {cv}{test} Median APE = median "
+             "absolute percentage error of the price in AZN.",
+        "B": f"{prefix}Task B, premium vs standard (premium = above the training median "
+             f"price). Precision, recall and F1 are for the premium class. {cv}{test}",
+        "timing": f"{prefix}Fit time on the training split and predict time on the test split "
+                  "(seconds, one run).",
+    }
 
 
 def write_outputs(report: dict, results_dir: str, tables_dir: str) -> list[str]:
@@ -372,34 +467,36 @@ def write_outputs(report: dict, results_dir: str, tables_dir: str) -> list[str]:
     paths = []
 
     path = os.path.join(results_dir, "metrics.json")
+    plain = _finite(json.loads(json.dumps(report, default=_jsonable)))
     with open(path, "w", encoding="utf-8") as f:
-        json.dump(report, f, indent=2, default=_jsonable, allow_nan=True)
+        json.dump(plain, f, indent=2, allow_nan=False)
     paths.append(path)
 
-    md = [f"# Results (seed {SEED})", "", "```",
-          evaluate.format_table(report["headline"], HEADLINE_COLUMNS, HEADLINE_HEADERS), "```",
-          "", "## Timing (seconds)", "", "```",
-          evaluate.format_table(report["timing"], ["task", "model", "n_train", "fit_seconds",
-                                                   "predict_seconds", "cv_fit_seconds"]), "```"]
+    captions = _captions(report["config"])
+    title = "# Results" + (" (SMOKE RUN, --fast)" if report["config"]["fast"] else "")
+    md = [f"{title}, seed {SEED}", ""]
+    for task, name in (("A", "Task A: log(price)"), ("B", "Task B: premium vs standard")):
+        md += [f"## {name}", "", "```",
+               evaluate.format_table(report["tables"][task], TABLE_COLUMNS[task],
+                                     TABLE_HEADERS[task]), "```", ""]
+    md += ["## Timing (seconds)", "", "```",
+           evaluate.format_table(report["timing"], ["task", "model", "n_train", "fit_seconds",
+                                                    "predict_seconds", "cv_fit_seconds"]), "```"]
     path = os.path.join(results_dir, "results.md")
     with open(path, "w", encoding="utf-8") as f:
         f.write("\n".join(md) + "\n")
     paths.append(path)
 
     tex = {
-        "results.tex": evaluate.latex_table(
-            report["headline"], ["model", "a_cv_rmse", "a_test_rmse", "b_cv_f1", "b_test_f1",
-                                 "b_test_auc"],
-            ["Model", "A: CV RMSE", "A: test RMSE [95\\% CI]", "B: CV F1",
-             "B: test F1 [95\\% CI]", "B: AUC"],
-            caption="Headline results. Task A: RMSE of log(price); Task B: F1 for the premium "
-                    f"tier. CV = {report['config']['folds']}-fold mean $\\pm$ std on the training "
-                    "split; test = held-out test split with a 95\\% bootstrap interval.",
-            label="tab:results", align="lccccc"),
+        "task_a.tex": evaluate.latex_table(
+            report["tables"]["A"], TABLE_COLUMNS["A"], LATEX_HEADERS["A"], captions["A"],
+            label="tab:task-a", align="lccccc", wide=True),
+        "task_b.tex": evaluate.latex_table(
+            report["tables"]["B"], TABLE_COLUMNS["B"], LATEX_HEADERS["B"], captions["B"],
+            label="tab:task-b", align="lcccccc", wide=True),
         "timing.tex": evaluate.latex_table(
             report["timing"], ["task", "model", "n_train", "fit_seconds", "predict_seconds"],
-            ["Task", "Model", "Train rows", "Fit (s)", "Predict (s)"],
-            caption="Fit time on the training split and predict time on the test split.",
+            ["Task", "Model", "Train rows", "Fit (s)", "Predict (s)"], captions["timing"],
             label="tab:timing", align="llrrr"),
     }
     for name, text in tex.items():
@@ -408,6 +505,10 @@ def write_outputs(report: dict, results_dir: str, tables_dir: str) -> list[str]:
             f.write(text)
         paths.append(path)
     return paths
+
+
+def _importance_label(panel: str) -> str:
+    return "increase in RMSE(log)" if panel.startswith("A:") else "drop in F1"
 
 
 def make_figures(data: dict, outputs_a: dict, outputs_b: dict, analysis: dict,
@@ -441,18 +542,36 @@ def make_figures(data: dict, outputs_a: dict, outputs_b: dict, analysis: dict,
         paths.append(plots.importance_bars(
             {k: v["permutation"] for k, v in analysis["importance"].items()},
             title="Permutation importance on the validation split (drop in score)",
-            out_dir=out_dir))
+            out_dir=out_dir, xlabel=_importance_label))
+        impurity = {k: v["impurity"] for k, v in analysis["importance"].items() if "impurity" in v}
+        if impurity:
+            paths.append(plots.importance_bars(
+                impurity, title="Tree impurity-decrease importance (training split)",
+                out_dir=out_dir, name="eval_tree_impurity_importance.pdf",
+                xlabel="share of total impurity decrease"))
     if analysis["svm_weights"]:
         paths.append(plots.importance_bars(analysis["svm_weights"], value="weight",
                                            title="Largest linear-SVM weights (standardized features)",
-                                           out_dir=out_dir, name="eval_svm_weights.pdf"))
+                                           out_dir=out_dir, name="eval_svm_weights.pdf",
+                                           xlabel="weight (standardized features)"))
     if scaling:
         paths.append(plots.fit_time_scaling(
             [{**r, "model": f"{r['task']}: {r['model']}"} for r in scaling], out_dir))
     return paths
 
 
-def _print_analysis(analysis: dict) -> None:
+def eda_figures(data_path: str, out_dir: str):
+    """Figures 1-4 from src/eda.py (the data owner's module), if the project has one.
+
+    Returns the numbers it reports, or None when there is no src/eda.py yet.
+    """
+    if importlib.util.find_spec(f"{__package__}.eda") is None:
+        return None
+    from . import eda
+    return eda.make_eda_figures(data_path, out_dir)
+
+
+def _print_analysis(analysis: dict, agreement: dict) -> None:
     for name, tables in analysis["task_a"].items():
         print(evaluate.format_table(tables["by_price_band"].to_dict("records"),
                                     ["group", "n", "rmse_log", "median_ape", "bias_log"],
@@ -462,28 +581,43 @@ def _print_analysis(analysis: dict) -> None:
                                     ["group", "n", "error_rate", "false_premium_rate",
                                      "missed_premium_rate"],
                                     title=f"\nTask B error by |log(price/threshold)|: {name}"))
+    for task, entry in agreement.items():
+        same = entry["share_identical"]
+        print(f"\nOur tree vs scikit-learn's ({task}): identical predictions on {same:.1%} of "
+              f"the test rows; depth/leaves ours {entry['ours']}, sklearn {entry['sklearn']}")
+    for note in analysis["notes"]:
+        print(f"\nNote: {note}")
 
 
 def main(argv: list[str] | None = None) -> dict:
     parser = argparse.ArgumentParser(description="Reproduce every number and figure.")
     parser.add_argument("--data", default=DATA_PATH, help="path to house_sale.csv")
     parser.add_argument("--fast", action="store_true",
-                        help="smoke run: 3,000 training rows, 3 folds, 200 bootstrap samples")
+                        help="smoke run: 3,000 training rows, 3 folds, 200 bootstrap samples; "
+                             "writes to fast/ subfolders so the real outputs are kept")
     parser.add_argument("--folds", type=int, default=None, help="CV folds (0 = no CV; default 5)")
     parser.add_argument("--boot", type=int, default=None, help="bootstrap samples (default 1000)")
     parser.add_argument("--no-scaling", action="store_true", help="skip the fit-time scaling study")
     parser.add_argument("--no-figures", action="store_true", help="skip writing figures")
-    parser.add_argument("--results-dir", default=RESULTS_DIR)
-    parser.add_argument("--tables-dir", default=TABLES_DIR)
-    parser.add_argument("--figures-dir", default=FIGURES_DIR)
+    parser.add_argument("--results-dir", default=None, help=f"default {RESULTS_DIR}")
+    parser.add_argument("--tables-dir", default=None, help=f"default {TABLES_DIR}")
+    parser.add_argument("--figures-dir", default=None, help=f"default {FIGURES_DIR}")
     args = parser.parse_args(argv)
     folds = args.folds if args.folds is not None else (3 if args.fast else 5)
     n_boot = args.boot if args.boot is not None else (200 if args.fast else 1000)
+    if folds == 1 or folds < 0:
+        parser.error("--folds must be 0 (no cross-validation) or at least 2")
+    if n_boot < 1:
+        parser.error("--boot must be at least 1")
     perm_repeats = 1 if args.fast else 3
+    out_dirs = {}
+    for key, default in (("results", RESULTS_DIR), ("tables", TABLES_DIR),
+                         ("figures", FIGURES_DIR)):
+        given = getattr(args, f"{key}_dir")
+        out_dirs[key] = given or (os.path.join(default, "fast") if args.fast else default)
 
     # 1. data
     data = load_data(args.data, fast=args.fast)
-    n_train = len(data["log_price"]["train"])
     sizes = {part: len(data["log_price"][part]) for part in ("train", "val", "test")}
     print(f"Data: {sizes}, {len(data['feature_names'])} features, "
           f"tier threshold = {data['threshold']:,.0f} AZN (train median)")
@@ -493,49 +627,61 @@ def main(argv: list[str] | None = None) -> dict:
     specs_a = task_a_models()
     rows_a, outputs_a = run_task("A", specs_a, data, folds, n_boot)
     print("Task B: premium vs standard")
-    specs_b = task_b_models(n_train)
+    specs_b = task_b_models()
     rows_b, outputs_b = run_task("B", specs_b, data, folds, n_boot)
 
     # 5. analysis
     analysis = analyse(data, outputs_a, outputs_b, perm_repeats)
+    agreement = tree_vs_sklearn(outputs_a, outputs_b)
     scaling = []
     if not args.no_scaling:
         print("Fit-time scaling study ...", flush=True)
-        for task, specs, rows in (("A", specs_a, rows_a), ("B", specs_b, rows_b)):
-            done = {r["model"]: r["fit_seconds"] for r in rows if r.get("status") == "ok"}
-            scaling += scaling_study(task, specs, data, done)
+        for task, specs, outputs in (("A", specs_a, outputs_a), ("B", specs_b, outputs_b)):
+            scaling += scaling_study(task, specs, data, set(outputs),
+                                     repeats=1 if args.fast else 3)
 
     # 6. output
+    config = {"tree_regression": TREE_REGRESSION, "tree_classification": TREE_CLASSIFICATION,
+              "svm": SVM, "folds": folds, "n_boot": n_boot, "fast": args.fast}
     report = {
         "seed": SEED,
-        "config": {"tree_regression": TREE_REGRESSION, "tree_classification": TREE_CLASSIFICATION,
-                   "svm": SVM, "folds": folds, "n_boot": n_boot, "fast": args.fast},
+        "config": config,
         "data": {**sizes, "n_features": len(data["feature_names"]),
                  "tier_threshold_azn": data["threshold"],
                  "test_premium_share": float(np.mean(data["tier"]["test"]))},
         "task_a": rows_a,
         "task_b": rows_b,
-        "headline": headline_rows(rows_a, rows_b),
+        "tables": {"A": result_rows(rows_a, "A"), "B": result_rows(rows_b, "B")},
         "timing": timing_rows(rows_a, rows_b),
         "scaling": scaling,
+        "tree_vs_sklearn": agreement,
         "analysis": analysis,
     }
-    print()
-    print(evaluate.format_table(report["headline"], HEADLINE_COLUMNS, HEADLINE_HEADERS,
-                                title="Headline results (CV on train: mean ± std; test: value "
-                                      "[95% bootstrap CI])"))
+    for task, name in (("A", "Task A: log(price)"), ("B", "Task B: premium vs standard")):
+        print()
+        print(evaluate.format_table(report["tables"][task], TABLE_COLUMNS[task],
+                                    TABLE_HEADERS[task],
+                                    title=f"{name} (CV on train: mean ± std; test: value "
+                                          "[95% bootstrap CI])"))
     print()
     print(evaluate.format_table(report["timing"], ["task", "model", "n_train", "fit_seconds",
                                                    "predict_seconds"], title="Timing (seconds)"))
-    _print_analysis(analysis)
+    _print_analysis(analysis, agreement)
     skipped = [f"{t}: {r['model']}" for t, rows in (("A", rows_a), ("B", rows_b))
                for r in rows if r.get("status") != "ok"]
     if skipped:
         print("\nNot implemented yet (skipped): " + ", ".join(skipped))
 
-    written = write_outputs(report, args.results_dir, args.tables_dir)
     if not args.no_figures:
-        written += make_figures(data, outputs_a, outputs_b, analysis, scaling, args.figures_dir)
+        eda = eda_figures(args.data, out_dirs["figures"])
+        if eda is not None:
+            report["eda"] = eda
+    written = write_outputs(report, out_dirs["results"], out_dirs["tables"])
+    if not args.no_figures:
+        written += make_figures(data, outputs_a, outputs_b, analysis, scaling,
+                                out_dirs["figures"])
+        if "eda" in report:
+            written.append(os.path.join(out_dirs["figures"], "fig1-4 (data exploration, src/eda.py)"))
     print("\nWrote:\n  " + "\n  ".join(written))
     return report
 

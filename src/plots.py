@@ -110,8 +110,12 @@ def roc_curves(scores: dict, y_true, out_dir: str = FIGURES_DIR,
 
 def importance_bars(tables: dict, value: str = "importance", top: int = 12,
                     title: str = "Feature importance", out_dir: str = FIGURES_DIR,
-                    name: str = "eval_feature_importance.pdf") -> str:
-    """Horizontal bars, one panel per table ({panel title: DataFrame with "feature" and `value`})."""
+                    name: str = "eval_feature_importance.pdf", xlabel=None) -> str:
+    """Horizontal bars, one panel per table ({panel title: DataFrame with "feature" and `value`}).
+
+    xlabel: one axis label for every panel, or a function panel title -> label
+    (panels can have different units, e.g. RMSE for Task A and F1 for Task B).
+    """
     n = len(tables)
     fig, axes = plt.subplots(1, n, figsize=(3.6 * n, 0.28 * top + 1.2), squeeze=False)
     for ax, (panel, table) in zip(axes[0], tables.items(), strict=True):
@@ -121,6 +125,9 @@ def importance_bars(tables: dict, value: str = "importance", top: int = 12,
         ax.axvline(0, color="black", lw=0.6)
         ax.set_title(panel, fontsize=9)
         ax.tick_params(axis="y", labelsize=7)
+        label = xlabel(panel) if callable(xlabel) else xlabel
+        if label:
+            ax.set_xlabel(label, fontsize=8)
     fig.suptitle(title, y=1.02)
     return _save(fig, out_dir, name)
 

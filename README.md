@@ -63,7 +63,7 @@ python -m src.run_all
 ```
 
 ## Reproducing the results
-One command produces every number, table and figure from a clean checkout:
+One command produces every evaluation number, table and figure from a clean checkout:
 
 ```bash
 # 1. the dataset (public on Kaggle; no account needed for this download link)
@@ -72,14 +72,14 @@ curl -L -o data/binaaz.zip \
 unzip -o data/binaaz.zip -d data/            # -> data/house_sale.csv
 
 # 2. everything else
-python -m src.run_all            # full run
-python -m src.run_all --fast     # smoke run: 3,000 training rows, 3 folds (about a minute)
+python -m src.run_all            # full run (a few minutes)
+python -m src.run_all --fast     # smoke run: 3,000 training rows, 3 folds; writes to fast/ subfolders
 ```
 
-`run_all` cleans and splits the data (seed 42), trains every model on the
-training split, and for each one reports 5-fold cross-validation on the
-training split (mean ± std), validation and test metrics with 95% bootstrap
-intervals, and fit/predict times:
+`run_all` cleans and splits the data (seed 42) and trains every model on the
+training split. For each model it reports 5-fold cross-validation on the training
+split (mean ± std), validation metrics, test metrics with 95% bootstrap intervals,
+and fit/predict times:
 
 | | Task A: log(price) | Task B: premium vs standard |
 |---|---|---|
@@ -87,19 +87,27 @@ intervals, and fit/predict times:
 | scikit-learn, same hyperparameters | `DecisionTreeRegressor` | `DecisionTreeClassifier`, `SGDClassifier` (hinge), `LinearSVC` |
 | Floor | predict the training mean | predict the majority class |
 
-It then writes:
+It also measures how often our tree's test predictions match scikit-learn's,
+fit time against training-set size, and errors broken down by price band,
+district and distance from the tier threshold. It then writes:
 
 - `results/metrics.json`: every number (including per-fold scores and error breakdowns)
-- `results/results.md`: the comparison and timing tables as text
-- `report/tables/results.tex`, `report/tables/timing.tex`: tables for the report (`\input{tables/results.tex}`)
+- `results/results.md`: the results and timing tables as text
+- `report/tables/task_a.tex`, `task_b.tex`, `timing.tex`: tables for the report
+  (`\input{tables/task_a.tex}`)
 - `report/figures/eval_*.pdf`: predicted vs actual, error by price band and by district
   coverage, confusion matrices, ROC curves, error vs distance from the tier threshold,
-  permutation importance, SVM weights, fit time vs training-set size
+  permutation importance, tree impurity importance, SVM weights, fit time vs
+  training-set size
+- `report/figures/fig1-4`: the data-exploration figures, once `src/eda.py` is merged
 
-These outputs are git-ignored: they are regenerated, never edited by hand. A model
-whose code is still a `TODO` stub is listed as "not implemented yet" and skipped.
-The final hyperparameters live at the top of `src/run_all.py` (`TREE_REGRESSION`,
-`TREE_CLASSIFICATION`, `SVM`) and are chosen on the validation split only.
+These outputs are git-ignored: they are regenerated, never edited by hand. Once the
+numbers are final, commit the report's tables and figures explicitly
+(`git add -f report/tables/*.tex report/figures/<name>.pdf`, see CONTRIBUTING.md) so
+the report builds in CI. A model whose code is still a `TODO` stub is listed as
+"not implemented yet" and skipped. The final hyperparameters live at the top of
+`src/run_all.py` (`TREE_REGRESSION`, `TREE_CLASSIFICATION`, `SVM`) and are chosen on
+the validation split only.
 
 ## Team workflow
 How we branch, review, test and submit: **[CONTRIBUTING.md](CONTRIBUTING.md)**.

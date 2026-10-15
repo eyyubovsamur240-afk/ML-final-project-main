@@ -15,6 +15,7 @@ env/
 report/figures/*.pdf
 report/figures/*.png
 !report/figures/.gitkeep
+report/figures/fast/
 *.log
 *.aux
 *.out
