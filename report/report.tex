@@ -129,37 +129,78 @@ Explain the learning-rate schedule, feature scaling, and your non-linear
 extension (kernelised Pegasos or random Fourier features), if any.
 
 \section{Experimental Setup}
-Metrics (RMSE/MAE/$R^2$ for regression; precision/recall/F1/AUC for
-classification), hyperparameter search protocol, seeds, and the
-scikit-learn baselines you compared against (with matched settings).
+\textbf{Protocol.} Every model sees the same 70/15/15 training, validation
+and test split (seed 42). Hyperparameters are chosen on the validation split
+only, the Task~B threshold is the training median price, and the test split
+is scored once, with the final settings. Each model is also cross-validated
+on the training split (5 folds, stratified by tier for Task~B; mean $\pm$
+std), and each headline test metric has a 95\% percentile bootstrap interval
+(1{,}000 resamples of the test rows).
+
+\textbf{Metrics.} Task~A: RMSE, MAE and $R^2$ on $\log(\text{price})$, the
+scale the models are trained on, and the median absolute percentage error of
+the price in AZN, which is easier to read. Task~B: precision, recall and F1
+for the premium class, accuracy, ROC-AUC from each model's continuous scores,
+and the confusion matrix.
+
+\textbf{Baselines.} scikit-learn's \texttt{DecisionTreeRegressor} and
+\texttt{DecisionTreeClassifier} get our tree's criterion, depth and leaf
+settings. Against our Pegasos SVM we fit \texttt{SGDClassifier} (hinge loss,
+$\alpha=\lambda$, whole epochs with at least as many updates as Pegasos) and
+\texttt{LinearSVC} ($C=1/(\lambda n)$ for $n$ training rows), each in a
+\texttt{Pipeline} after \texttt{StandardScaler}, so all three solve the same
+regularised hinge-loss problem on features standardised with training
+statistics only. Trivial floors predict the training mean (Task~A) and the
+majority class (Task~B).
+
+\textbf{Analysis and timing.} Feature importance treats all one-hot columns
+of a feature as one: impurity decrease for the trees, permutation importance
+on the validation split for every model, and the weights of the linear SVMs.
+Fit and predict times are wall-clock seconds on one machine; fit time against
+training-set size is the median of three fits on nested subsamples of
+$1/8$, $1/4$, $1/2$ and all of the training split.
+
+\textbf{Reproducibility.} All randomness is seeded, and
+\texttt{python -m src.run\_all} regenerates every number, table and figure
+in this report from the raw data; a test checks that two runs give identical
+numbers apart from the timings.
+
+% Tables and figures below are written by `python -m src.run_all`
+% (report/tables/, report/figures/). Until they are generated, a box
+% names the missing file instead of breaking the build.
+\newcommand{\missinggenerated}[1]{\fbox{\parbox{0.95\linewidth}{\small
+  Missing \nolinkurl{report/#1}: run \texttt{python -m src.run\_all}.}}}
+\newcommand{\generatedtable}[1]{\IfFileExists{#1}{\input{#1}}{%
+  \par\noindent\missinggenerated{#1}\par}}
+\newcommand{\generatedfigure}[2]{\IfFileExists{#1}{%
+  \includegraphics[width=#2]{#1}}{\missinggenerated{#1}}}
 
 \section{Results}
-Lead with a results table; back every claim with a number or figure.
+Table~\ref{tab:results} compares every model on both tasks on the held-out
+test split. Tables~\ref{tab:task-a} and~\ref{tab:task-b} add the
+cross-validated scores and the remaining metrics, and
+Table~\ref{tab:timing} the fit and predict times.
 
-\begin{table}[t]
-  \centering
-  \caption{Headline results (test set, mean $\pm$ std over folds).}
-  \label{tab:results}
-  \begin{tabular}{@{}lcc@{}}
-    \toprule
-    Model & Task A (RMSE) & Task B (F1) \\
-    \midrule
-    Ours: decision tree     & --- & --- \\
-    Ours: SVM (Pegasos)     & n/a & --- \\
-    scikit-learn baseline   & --- & --- \\
-    \bottomrule
-  \end{tabular}
-\end{table}
+\generatedtable{tables/headline.tex}
+\generatedtable{tables/task_a.tex}
+\generatedtable{tables/task_b.tex}
+\generatedtable{tables/timing.tex}
 
 \begin{figure}[t]
   \centering
-  % \includegraphics[width=\linewidth]{figures/your_plot.pdf}
-  \fbox{\parbox[c][3.2cm][c]{0.9\linewidth}{\centering\small
-    Replace with a figure (e.g.\ validation curve, confusion matrix,
-    or feature importances). Save plots to \texttt{figures/}.}}
-  \caption{One clear figure beats ten decorative ones.}
-  \label{fig:main}
+  \generatedfigure{figures/eval_pred_vs_actual.pdf}{\linewidth}
+  \caption{Task~A: predicted vs actual $\log(\text{price})$ on the test
+    split; the dashed line is a perfect prediction.}
+  \label{fig:pred-actual}
 \end{figure}
+
+\begin{figure*}[t]
+  \centering
+  \generatedfigure{figures/eval_confusion_matrices.pdf}{\textwidth}
+  \caption{Task~B confusion matrices on the test split (rows: actual
+    tier, columns: predicted tier).}
+  \label{fig:confusion}
+\end{figure*}
 
 \section{Discussion and Limitations}
 Where and why each model fails (luxury outliers, sparse districts,

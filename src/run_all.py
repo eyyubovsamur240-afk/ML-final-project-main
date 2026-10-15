@@ -542,7 +542,8 @@ def write_outputs(report: dict, results_dir: str, tables_dir: str) -> list[str]:
     tex = {
         "headline.tex": evaluate.latex_table(
             report["tables"]["headline"], TABLE_COLUMNS["headline"], LATEX_HEADERS["headline"],
-            captions["headline"], label="tab:results", align="lcc"),
+            captions["headline"], label="tab:results",
+            align=r"l@{\hspace{8pt}}c@{\hspace{8pt}}c"),  # fits one column of the report
         "task_a.tex": evaluate.latex_table(
             report["tables"]["A"], TABLE_COLUMNS["A"], LATEX_HEADERS["A"], captions["A"],
             label="tab:task-a", align="lccccc", wide=True),
