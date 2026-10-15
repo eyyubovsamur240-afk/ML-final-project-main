@@ -180,6 +180,8 @@ def test_bad_inputs_raise_instead_of_giving_a_plausible_number():
         evaluate.roc_auc(y, [np.nan, 0.9, 0.8, 0.3])
     with pytest.raises(ValueError, match="NaN"):
         evaluate.roc_curve(y, [np.nan, 0.9, 0.8, 0.3])
+    with pytest.raises(ValueError, match="inf"):
+        evaluate.roc_curve(y, [np.inf, np.inf, 0.8, -np.inf])
     with pytest.raises(ValueError, match="length"):
         evaluate.roc_curve(y, [0.1, 0.9])
     with pytest.raises(ValueError, match="NaN"):

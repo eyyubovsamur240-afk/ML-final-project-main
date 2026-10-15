@@ -139,8 +139,8 @@ def _labels_and_scores(y_true, scores, positive):
     scores = np.asarray(scores, dtype=float).ravel()
     if y_true.shape != scores.shape:
         raise ValueError(f"length mismatch: {len(y_true)} labels vs {len(scores)} scores")
-    if np.isnan(scores).any():
-        raise ValueError("scores contain NaN")
+    if not np.isfinite(scores).all():   # e.g. a diverged model; inf also breaks the tie runs
+        raise ValueError("scores contain NaN or inf")
     return y_true, scores
 
 
