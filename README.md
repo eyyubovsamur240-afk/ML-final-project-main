@@ -85,7 +85,7 @@ curl -L -o data/binaaz.zip \
 unzip -o data/binaaz.zip -d data/            # -> data/house_sale.csv
 
 # 2. everything else
-python -m src.run_all            # full run (a few minutes)
+python -m src.run_all            # full run (~40 min, most of it the tree study; --no-tree-study skips it)
 python -m src.run_all --fast     # smoke run: 3,000 training rows, 3 folds; writes to fast/ subfolders
 ```
 
