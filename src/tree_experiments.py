@@ -19,6 +19,9 @@ Usage from run_all.py:
                                                  feature_names, tree_results)
 where task_x_splits = (X_tr, y_tr, X_val, y_val, X_te, y_te).
 For Task A pass log(price) as y (heavy tailed target); RMSE is then in log units.
+By default the Task A models are trained on log(price per m2 / sot) and the
+area is added back (per_size=True, see per_size_target); that does not change
+what the RMSE means.
 
 Quick check without the real data (two small datasets that ship with sklearn):
     python -m src.tree_experiments
@@ -290,6 +293,49 @@ def plot_feature_importances(tree, feature_names, title, name, top_k=15, fig_dir
     return _save(fig, name, fig_dir)
 
 
+# --- Task A target: price per m2 / per sot -----------------------------------
+def log_size(X, feature_names):
+    """
+    log of each listing's size: floor area (m2) for buildings, land area (sot)
+    for land plots (their area_m2 is 0). Rows without any size get 0, so they
+    just keep log(price) as their target.
+    """
+    area = X[:, feature_names.index("area_m2")]
+    land = X[:, feature_names.index("land_area_sot")]
+    size = np.where(area > 0, area, land)
+    return np.log(np.where(size > 0, size, 1.0))
+
+
+def per_size_target(task_a, feature_names):
+    """
+    Task A splits with y = log(price) - log(size), i.e. log(price per m2 / sot).
+
+    A tree can only model the effect of area in steps (one leaf per range of
+    areas). With this target it predicts the price per m2 and the area goes
+    back in exactly: log(price) = prediction + log(size).
+
+    log(size) is a known feature of the listing, so y_hat - y is the same on
+    both scales: RMSE here IS the RMSE of log(price), comparable with the plain
+    target. Price per m2 is only the training target, never a feature (as a
+    feature it would be the unit_price leakage). We chose this target on the
+    validation split, where it beat plain log(price) with the same tree.
+    """
+    X_tr, y_tr, X_va, y_va, X_te, y_te = task_a
+    return (X_tr, y_tr - log_size(X_tr, feature_names),
+            X_va, y_va - log_size(X_va, feature_names),
+            X_te, y_te - log_size(X_te, feature_names))
+
+
+def task_a_splits(task_a, feature_names, per_size=True):
+    """Task A splits the way the models see them (see per_size_target)."""
+    if not per_size:
+        return task_a, "log(price)"
+    if "area_m2" not in feature_names or "land_area_sot" not in feature_names:
+        print("  (no area_m2 / land_area_sot columns, Task A target stays log(price))")
+        return task_a, "log(price)"
+    return per_size_target(task_a, feature_names), "log(price per m2 / sot)"
+
+
 # --- the whole tree study ----------------------------------------------------
 def tune(task, X_tr, y_tr, X_val, y_val, criterion=None):
     """
@@ -306,11 +352,14 @@ def tune(task, X_tr, y_tr, X_val, y_val, criterion=None):
     return params, depth_curve, leaf_curve
 
 
-def run(task_a, task_b, feature_names, fig_dir=FIG_DIR):
+def run(task_a, task_b, feature_names, fig_dir=FIG_DIR, per_size=True):
     """
     Full decision-tree study for both tasks. task_a / task_b are
-    (X_tr, y_tr, X_val, y_val, X_te, y_te). Saves figures to fig_dir and
-    returns the final params, test scores and sklearn comparisons.
+    (X_tr, y_tr, X_val, y_val, X_te, y_te), with y = log(price) for Task A.
+    per_size=True trains Task A on log(price per m2 / sot), see
+    per_size_target (RMSE is still the RMSE of log(price)).
+    Saves figures to fig_dir and returns the final params, test scores and
+    sklearn comparisons.
     """
     results = {}
 
@@ -346,8 +395,10 @@ def run(task_a, task_b, feature_names, fig_dir=FIG_DIR):
                              criterion_curves={c: v[1] for c, v in crit_curves.items()})
 
     # Task A: regression
-    Xtr, ytr, Xva, yva, Xte, yte = task_a
     print("\n[tree] Task A: regression")
+    task_a, target = task_a_splits(task_a, feature_names, per_size)
+    print(f"  target: {target} (RMSE below = RMSE of log(price))")
+    Xtr, ytr, Xva, yva, Xte, yte = task_a
     params_a, depth_curve_a, leaf_curve_a = tune("regression", Xtr, ytr, Xva, yva)
     plot_validation_curves([depth_curve_a], ["mse"], "regression", "Task A: tree depth",
                            "tree_a_depth.png", fig_dir)
@@ -362,7 +413,8 @@ def run(task_a, task_b, feature_names, fig_dir=FIG_DIR):
     print_comparison("[tree] Task A test set: ours vs DecisionTreeRegressor", cmp_a, "regression")
     plot_feature_importances(cmp_a["ours"]["model"], feature_names,
                              "Task A: our tree, feature importance", "tree_a_importance.png", fig_dir=fig_dir)
-    results["task_a"] = dict(params=params_a, comparison=cmp_a, depth_curve=depth_curve_a)
+    results["task_a"] = dict(params=params_a, comparison=cmp_a, depth_curve=depth_curve_a,
+                             target=target)
 
     return results
 
@@ -403,14 +455,16 @@ def plot_forest_curve(n_trees, val_curve, test_curve, single_tree, sk_score, tas
     return _save(fig, name, fig_dir)
 
 
-def run_forest(task_a, task_b, feature_names, tree_results=None, fig_dir=FIG_DIR):
+def run_forest(task_a, task_b, feature_names, tree_results=None, fig_dir=FIG_DIR, per_size=True):
     """
     Random forest of our own trees on both tasks: validation/test error as
     trees are added, compared with a single tree and with sklearn's forest.
     tree_results = output of run(), used for the single-tree baseline (if
-    None, a fully grown single tree is used instead).
+    None, a fully grown single tree is used instead). per_size: same Task A
+    target as in run() -- keep it the same in both calls.
     """
     results = {}
+    task_a, _ = task_a_splits(task_a, feature_names, per_size)
     for task, splits, key, label in (("classification", task_b, "task_b", "Task B"),
                                      ("regression", task_a, "task_a", "Task A")):
         Xtr, ytr, Xva, yva, Xte, yte = splits
