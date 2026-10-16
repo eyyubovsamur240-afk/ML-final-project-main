@@ -36,6 +36,7 @@ import numpy as np
 # Figure objects directly (no pyplot): nothing opens a window and no backend
 # has to be picked, so this also runs on CI / without a display
 from matplotlib.figure import Figure
+from matplotlib.patches import Rectangle
 from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
 from sklearn.tree import DecisionTreeClassifier, DecisionTreeRegressor
 
@@ -47,6 +48,12 @@ FIG_DIR = "report/figures"
 
 DEPTHS = [1, 2, 3, 4, 5, 6, 8, 10, 12, 15, 20, None]
 MIN_LEAF = [1, 2, 5, 10, 20, 50, 100]
+# Joint grid for tuning. Depth and leaf size interact: with 1-row leaves deep
+# trees overfit, so a depth sweep alone stops too early, while with bigger
+# leaves the deeper trees win. Subsets of DEPTHS / MIN_LEAF so the curves for
+# the plots reuse the fitted trees.
+GRID_DEPTHS = [2, 4, 6, 8, 10, 12, 15, 20, None]
+GRID_LEAF = [1, 5, 10, 20, 50]
 
 
 # --- metrics -----------------------------------------------------------------
@@ -84,29 +91,33 @@ def default_params(task):
 
 
 # --- sweeps ------------------------------------------------------------------
-def validation_curve(param, values, X_tr, y_tr, X_val, y_val, base_params):
+def fit_and_score(params, X_tr, y_tr, X_val, y_val, cache=None):
+    """Fit one tree; train/validation score, fit time and size. With a cache
+    dict, a tree with the same params is only fitted once."""
+    key = tuple(sorted(params.items()))
+    if cache is not None and key in cache:
+        return cache[key]
+    task = params["task"]
+    t0 = time.perf_counter()
+    tree = DecisionTree(**params).fit(X_tr, y_tr)
+    res = dict(fit_time=time.perf_counter() - t0,
+               train=score(task, y_tr, tree.predict(X_tr)),
+               val=score(task, y_val, tree.predict(X_val)),
+               n_leaves=tree.get_n_leaves())
+    if cache is not None:
+        cache[key] = res
+    return res
+
+
+def validation_curve(param, values, X_tr, y_tr, X_val, y_val, base_params, cache=None):
     """Fit one tree per value of `param`; train + validation score for each."""
-    task = base_params["task"]
     out = {"param": param, "values": list(values), "train": [], "val": [],
            "fit_time": [], "n_leaves": []}
     for v in values:
-        t0 = time.perf_counter()
-        tree = DecisionTree(**{**base_params, param: v}).fit(X_tr, y_tr)
-        out["fit_time"].append(time.perf_counter() - t0)
-        out["train"].append(score(task, y_tr, tree.predict(X_tr)))
-        out["val"].append(score(task, y_val, tree.predict(X_val)))
-        out["n_leaves"].append(tree.get_n_leaves())
+        res = fit_and_score({**base_params, param: v}, X_tr, y_tr, X_val, y_val, cache)
+        for k in ("train", "val", "fit_time", "n_leaves"):
+            out[k].append(res[k])
     return out
-
-
-def best_value(curve, task):
-    """Value with the best validation score. Values are listed from simple to
-    complex, so on a tie the simpler tree wins."""
-    best = 0
-    for i, s in enumerate(curve["val"]):
-        if is_better(task, s, curve["val"][best]):
-            best = i
-    return curve["values"][best]
 
 
 def learning_curve(params, X_tr, y_tr, X_val, y_val,
@@ -293,6 +304,32 @@ def plot_feature_importances(tree, feature_names, title, name, top_k=15, fig_dir
     return _save(fig, name, fig_dir)
 
 
+def plot_grid(grid, task, best, title, name, fig_dir=FIG_DIR):
+    """Heatmap of the validation score over max_depth x min_samples_leaf;
+    darker = better, the chosen cell has a red frame."""
+    scores = np.array([[grid[(d, leaf)] for leaf in GRID_LEAF] for d in GRID_DEPTHS])
+    fig = Figure(figsize=(5, 4.2))
+    ax = fig.subplots()
+    cmap = "Blues" if task == "classification" else "Blues_r"   # RMSE: lower is better
+    im = ax.imshow(scores, cmap=cmap, aspect="auto")
+    for i in range(len(GRID_DEPTHS)):
+        for j in range(len(GRID_LEAF)):
+            shade = im.norm(scores[i, j])
+            dark = shade > 0.6 if task == "classification" else shade < 0.4
+            ax.text(j, i, f"{scores[i, j]:.3f}", ha="center", va="center", fontsize=7,
+                    color="white" if dark else "black")
+    bi, bj = GRID_DEPTHS.index(best[0]), GRID_LEAF.index(best[1])
+    ax.add_patch(Rectangle((bj - 0.5, bi - 0.5), 1, 1, fill=False, edgecolor="red", lw=2))
+    ax.set_xticks(range(len(GRID_LEAF)), labels=[str(leaf) for leaf in GRID_LEAF])
+    ax.set_yticks(range(len(GRID_DEPTHS)),
+                  labels=["None" if d is None else str(d) for d in GRID_DEPTHS])
+    ax.set_xlabel("min_samples_leaf")
+    ax.set_ylabel("max_depth")
+    ax.set_title(title)
+    fig.colorbar(im, ax=ax, label=f"validation {metric_name(task)}")
+    return _save(fig, name, fig_dir)
+
+
 # --- Task A target: price per m2 / per sot -----------------------------------
 def log_size(X, feature_names):
     """
@@ -339,17 +376,54 @@ def task_a_splits(task_a, feature_names, per_size=True):
 # --- the whole tree study ----------------------------------------------------
 def tune(task, X_tr, y_tr, X_val, y_val, criterion=None):
     """
-    Pick max_depth, then min_samples_leaf (with that depth), on validation.
-    Returns (best_params, depth_curve, leaf_curve).
+    Pick max_depth and min_samples_leaf TOGETHER on validation, over the grid
+    GRID_DEPTHS x GRID_LEAF. (Picking depth first with 1-row leaves and then
+    the leaf size chose depth 8 / leaf 10 for Task A, while depth 15 / leaf 20
+    was clearly better on validation.) On a tie the shallower tree, then the
+    one with bigger leaves wins, i.e. the simpler tree.
+
+    Returns (best_params, grid, curves): grid[(depth, leaf)] = validation
+    score; curves has the depth curve at the chosen leaf size ("depth"), the
+    depth curve with 1-row leaves ("depth_leaf1") and the leaf curve at the
+    chosen depth ("leaf"), for the plots.
     """
     params = default_params(task)
     if criterion is not None:
         params["criterion"] = criterion
-    depth_curve = validation_curve("max_depth", DEPTHS, X_tr, y_tr, X_val, y_val, params)
-    params["max_depth"] = best_value(depth_curve, task)
-    leaf_curve = validation_curve("min_samples_leaf", MIN_LEAF, X_tr, y_tr, X_val, y_val, params)
-    params["min_samples_leaf"] = best_value(leaf_curve, task)
-    return params, depth_curve, leaf_curve
+    cache = {}
+    grid, best = {}, None
+    for depth in GRID_DEPTHS:
+        for leaf in sorted(GRID_LEAF, reverse=True):
+            res = fit_and_score({**params, "max_depth": depth, "min_samples_leaf": leaf},
+                                X_tr, y_tr, X_val, y_val, cache)
+            grid[(depth, leaf)] = res["val"]
+            if best is None or is_better(task, res["val"], grid[best]):
+                best = (depth, leaf)
+    params["max_depth"], params["min_samples_leaf"] = best
+
+    curves = {
+        "depth": validation_curve("max_depth", DEPTHS, X_tr, y_tr, X_val, y_val, params, cache),
+        "depth_leaf1": validation_curve("max_depth", DEPTHS, X_tr, y_tr, X_val, y_val,
+                                        {**params, "min_samples_leaf": 1}, cache),
+        "leaf": validation_curve("min_samples_leaf", MIN_LEAF, X_tr, y_tr, X_val, y_val,
+                                 params, cache),
+    }
+    return params, grid, curves
+
+
+def print_grid(grid, task):
+    print(f"  validation {metric_name(task)}: rows max_depth, columns min_samples_leaf")
+    print("  " + " " * 6 + "".join(f"{leaf:>8d}" for leaf in GRID_LEAF))
+    for d in GRID_DEPTHS:
+        print("  " + f"{str(d):>6s}" + "".join(f"{grid[(d, leaf)]:8.4f}" for leaf in GRID_LEAF))
+
+
+def _depth_curves(params, curves):
+    """Depth curve at the chosen leaf size, plus the 1-row-leaf one if different."""
+    leaf = params["min_samples_leaf"]
+    if leaf == 1:
+        return [curves["depth"]], ["min_samples_leaf=1"]
+    return [curves["depth_leaf1"], curves["depth"]], ["min_samples_leaf=1", f"min_samples_leaf={leaf}"]
 
 
 def run(task_a, task_b, feature_names, fig_dir=FIG_DIR, per_size=True):
@@ -363,24 +437,31 @@ def run(task_a, task_b, feature_names, fig_dir=FIG_DIR, per_size=True):
     """
     results = {}
 
-    # Task B: Gini vs entropy over depth
+    # Task B: gini vs entropy, each tuned on the depth x leaf grid
     Xtr, ytr, Xva, yva, Xte, yte = task_b
-    print("[tree] Task B: gini vs entropy")
-    crit_curves = {}
+    print("[tree] Task B: gini vs entropy (max_depth x min_samples_leaf on validation)")
+    tuned = {}
     for crit in ("gini", "entropy"):
-        params, depth_curve, leaf_curve = tune("classification", Xtr, ytr, Xva, yva, criterion=crit)
-        crit_curves[crit] = (params, depth_curve, leaf_curve)
-        best_val = depth_curve["val"][depth_curve["values"].index(params["max_depth"])]
+        params, grid, curves = tune("classification", Xtr, ytr, Xva, yva, criterion=crit)
+        tuned[crit] = (params, grid, curves)
         print(f"  {crit:8s} best max_depth={params['max_depth']}, "
-              f"min_samples_leaf={params['min_samples_leaf']}, val F1 at that depth={best_val:.4f}")
-    plot_validation_curves([crit_curves["gini"][1], crit_curves["entropy"][1]], ["gini", "entropy"],
+              f"min_samples_leaf={params['min_samples_leaf']}, "
+              f"val F1={grid[(params['max_depth'], params['min_samples_leaf'])]:.4f}")
+
+    def best_val(crit):
+        p, grid, _ = tuned[crit]
+        return grid[(p["max_depth"], p["min_samples_leaf"])]
+
+    best_crit = max(("gini", "entropy"), key=best_val)     # gini on an exact tie
+    params_b, grid_b, curves_b = tuned[best_crit]
+    print_grid(grid_b, "classification")
+    plot_grid(grid_b, "classification", (params_b["max_depth"], params_b["min_samples_leaf"]),
+              f"Task B ({best_crit}): validation F1", "tree_b_grid.png", fig_dir)
+    plot_validation_curves([tuned[c][2]["depth"] for c in ("gini", "entropy")],
+                           [f"{c}, leaf {tuned[c][0]['min_samples_leaf']}" for c in ("gini", "entropy")],
                            "classification", "Task B: tree depth (gini vs entropy)",
                            "tree_b_depth_gini_entropy.png", fig_dir)
-
-    # keep whichever criterion did better on validation (after the leaf sweep)
-    best_crit = max(("gini", "entropy"), key=lambda c: max(crit_curves[c][2]["val"]))
-    params_b, _, leaf_curve_b = crit_curves[best_crit]
-    plot_validation_curves([leaf_curve_b], [best_crit], "classification",
+    plot_validation_curves([curves_b["leaf"]], [best_crit], "classification",
                            f"Task B: min_samples_leaf (max_depth={params_b['max_depth']})",
                            "tree_b_min_samples_leaf.png", fig_dir)
     plot_learning_curve(learning_curve(params_b, Xtr, ytr, Xva, yva), "classification",
@@ -391,18 +472,21 @@ def run(task_a, task_b, feature_names, fig_dir=FIG_DIR, per_size=True):
     print_comparison("[tree] Task B test set: ours vs DecisionTreeClassifier", cmp_b, "classification")
     plot_feature_importances(cmp_b["ours"]["model"], feature_names,
                              "Task B: our tree, feature importance", "tree_b_importance.png", fig_dir=fig_dir)
-    results["task_b"] = dict(params=params_b, comparison=cmp_b,
-                             criterion_curves={c: v[1] for c, v in crit_curves.items()})
+    results["task_b"] = dict(params=params_b, comparison=cmp_b, grid=grid_b,
+                             criterion_curves={c: v[2]["depth"] for c, v in tuned.items()})
 
     # Task A: regression
-    print("\n[tree] Task A: regression")
+    print("\n[tree] Task A: regression (max_depth x min_samples_leaf on validation)")
     task_a, target = task_a_splits(task_a, feature_names, per_size)
     print(f"  target: {target} (RMSE below = RMSE of log(price))")
     Xtr, ytr, Xva, yva, Xte, yte = task_a
-    params_a, depth_curve_a, leaf_curve_a = tune("regression", Xtr, ytr, Xva, yva)
-    plot_validation_curves([depth_curve_a], ["mse"], "regression", "Task A: tree depth",
-                           "tree_a_depth.png", fig_dir)
-    plot_validation_curves([leaf_curve_a], ["mse"], "regression",
+    params_a, grid_a, curves_a = tune("regression", Xtr, ytr, Xva, yva)
+    print_grid(grid_a, "regression")
+    plot_grid(grid_a, "regression", (params_a["max_depth"], params_a["min_samples_leaf"]),
+              "Task A: validation RMSE", "tree_a_grid.png", fig_dir)
+    plot_validation_curves(*_depth_curves(params_a, curves_a), "regression",
+                           "Task A: tree depth", "tree_a_depth.png", fig_dir)
+    plot_validation_curves([curves_a["leaf"]], ["mse"], "regression",
                            f"Task A: min_samples_leaf (max_depth={params_a['max_depth']})",
                            "tree_a_min_samples_leaf.png", fig_dir)
     plot_learning_curve(learning_curve(params_a, Xtr, ytr, Xva, yva), "regression",
@@ -413,8 +497,8 @@ def run(task_a, task_b, feature_names, fig_dir=FIG_DIR, per_size=True):
     print_comparison("[tree] Task A test set: ours vs DecisionTreeRegressor", cmp_a, "regression")
     plot_feature_importances(cmp_a["ours"]["model"], feature_names,
                              "Task A: our tree, feature importance", "tree_a_importance.png", fig_dir=fig_dir)
-    results["task_a"] = dict(params=params_a, comparison=cmp_a, depth_curve=depth_curve_a,
-                             target=target)
+    results["task_a"] = dict(params=params_a, comparison=cmp_a, grid=grid_a,
+                             depth_curve=curves_a["depth"], target=target)
 
     return results
 
