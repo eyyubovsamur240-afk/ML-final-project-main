@@ -9,6 +9,8 @@ baselines.py — what our from-scratch models are compared against (Problem 5).
     wrapped like a scikit-learn Pipeline so CV can refit it per fold.
   * SizedToFitData: builds a baseline at fit time from the number of fit rows,
     so the SVM baselines stay matched on CV folds and scaling-study subsets.
+  * PerSizeTarget: Task A trees fitted on log(price per m2 / sot) that predict
+    log(price), the target tree_experiments tunes them on.
 
 Matching notes (worth a sentence in the report):
   * Pegasos minimises  lambda/2 ||w||^2 + (1/n) sum hinge.  SGDClassifier with
@@ -37,6 +39,8 @@ from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
 from sklearn.svm import LinearSVC
 from sklearn.tree import DecisionTreeClassifier, DecisionTreeRegressor
+
+from .tree_experiments import log_size
 
 # Our criterion names -> scikit-learn's.
 _SK_CRITERION = {"mse": "squared_error", "gini": "gini", "entropy": "entropy"}
@@ -178,3 +182,34 @@ class StandardScaled:
         if callable(attr) and name in ("decision_function", "predict_proba"):
             return lambda X: attr(self._scale(X))
         return attr
+
+
+class PerSizeTarget:
+    """Fit `model` on log(price) - log(size), predict log(price) again.
+
+    size is the floor area (m2), or the land area (sot) for land plots, read
+    from the listing's own features (tree_experiments.log_size), so the area
+    goes back in exactly and predict() is on the log(price) scale: every
+    metric, R2 included, means the same as for a model trained on log(price).
+    Price per m2 is only the training target, never a feature.
+    """
+
+    def __init__(self, model, feature_names):
+        self.model = model
+        self.feature_names = list(feature_names)
+
+    def _log_size(self, X):
+        return log_size(np.asarray(X, dtype=float), self.feature_names)
+
+    def fit(self, X, y):
+        self.model.fit(X, np.asarray(y, dtype=float) - self._log_size(X))
+        return self
+
+    def predict(self, X):
+        return self.model.predict(X) + self._log_size(X)
+
+    def __getattr__(self, name):
+        # feature_importances_, get_depth, get_n_leaves, ... come from the tree.
+        if name in ("model", "feature_names"):
+            raise AttributeError(name)
+        return getattr(self.model, name)

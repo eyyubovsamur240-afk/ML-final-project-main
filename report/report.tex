@@ -143,6 +143,18 @@ the price in AZN, which is easier to read. Task~B: precision, recall and F1
 for the premium class, accuracy, ROC-AUC from each model's continuous scores,
 and the confusion matrix.
 
+\textbf{Task~A target for the trees.} A tree can only follow the floor area
+in steps, so both trees are fitted on $\log(\text{price}/\text{area})$ (area
+in m$^2$, or in sot for land plots) and the listing's own $\log(\text{area})$
+is added back to the prediction. The area is an ordinary feature of the
+listing; \texttt{unit\_price} and \texttt{total\_price} are dropped from
+every feature matrix and price per m$^2$ is never an input, only the training
+target. Because the area is added back exactly, the residuals are the same as
+on $\log(\text{price})$, so every Task~A metric, $R^2$ included, is computed
+on $\log(\text{price})$. The tree settings are tuned on the validation split
+(\texttt{src/tree\_experiments.py}) and the same settings are used in every
+table.
+
 \textbf{Baselines.} scikit-learn's \texttt{DecisionTreeRegressor} and
 \texttt{DecisionTreeClassifier} get our tree's criterion, depth and leaf
 settings. Against our Pegasos SVM we fit \texttt{SGDClassifier} (hinge loss,
@@ -248,7 +260,9 @@ listing's district, and by distance from the tier threshold.
   \generatedfigure{figures/eval_tree_impurity_importance.pdf}{\linewidth}
   \caption{Impurity-decrease importance of the trees on the training
     split, as a share of the total decrease, with the one-hot columns of a
-    feature summed.}
+    feature summed. For Task~A the log area is added back outside the
+    tree, so the area's importance here understates how much it drives the
+    price.}
   \label{fig:impurity}
 \end{figure}
 

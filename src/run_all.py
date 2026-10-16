@@ -8,6 +8,10 @@ Run from the repo root:
 
 What it does:
   1. data: clean, split 70/15/15, encode (src/data_prep.py, Problem 1)
+  1b. the tree study (src/tree_experiments.py, Problems 4a, 5a, 9): tunes our
+     tree on the validation split, compares it with scikit-learn's node by
+     node and grows the random forest bonus; the tuned settings are the ones
+     the trees use below (--no-tree-study keeps TREE_REGRESSION / _CLASSIFICATION)
   2. Task A, log(price): our decision tree vs DecisionTreeRegressor vs the train mean
   3. Task B, price tier: our decision tree and our Pegasos SVM vs scikit-learn's
      DecisionTreeClassifier, SGDClassifier (hinge) and LinearSVC, and the majority class
@@ -33,6 +37,7 @@ import importlib.util
 import json
 import math
 import os
+import tempfile
 import warnings
 from collections import Counter
 from dataclasses import dataclass
@@ -40,7 +45,7 @@ from typing import Callable
 
 import numpy as np
 
-from . import baselines, data_prep, error_analysis, evaluate, plots
+from . import baselines, data_prep, error_analysis, evaluate, plots, tree_experiments
 from .decision_tree import DecisionTree
 from .svm import PegasosSVM
 
@@ -53,7 +58,8 @@ FIGURES_DIR = plots.FIGURES_DIR
 # --- Final hyperparameters (Problem 4c) ----------------------------------------
 # The tree and SVM owners set these from the VALIDATION results only (never the
 # test set). The scikit-learn baselines reuse the same values, which is what
-# makes the comparison in Problem 5 a matched one.
+# makes the comparison in Problem 5 a matched one. The tree settings are only a
+# fallback: a normal run takes them from the tree study (tree_experiments.run).
 TREE_REGRESSION = {"criterion": "mse", "max_depth": 12, "min_samples_split": 2,
                    "min_samples_leaf": 5, "min_impurity_decrease": 0.0}
 TREE_CLASSIFICATION = {"criterion": "gini", "max_depth": 10, "min_samples_split": 2,
@@ -76,16 +82,28 @@ class ModelSpec:
     ours: bool = False
 
 
-def task_a_models() -> list[ModelSpec]:
+def task_a_models(tree: dict | None = None, feature_names: list[str] | None = None,
+                  per_size: bool = False) -> list[ModelSpec]:
+    """per_size=True fits both trees on log(price per m2 / sot) and predicts
+    log(price) (baselines.PerSizeTarget), the target the tree study tuned them on."""
+    tree = TREE_REGRESSION if tree is None else tree
+
+    def wrap(make):
+        if not per_size:
+            return make
+        return lambda: baselines.PerSizeTarget(make(), feature_names)
+
     return [
-        ModelSpec(OUR_TREE, lambda: DecisionTree(task="regression", random_state=SEED,
-                                                 **TREE_REGRESSION), ours=True),
-        ModelSpec(SK_TREE, lambda: baselines.sk_tree_regressor(TREE_REGRESSION, SEED)),
+        ModelSpec(OUR_TREE, wrap(lambda: DecisionTree(task="regression", random_state=SEED,
+                                                      **tree)), ours=True),
+        ModelSpec(SK_TREE, wrap(lambda: baselines.sk_tree_regressor(tree, SEED))),
         ModelSpec(TRIVIAL, baselines.MeanRegressor),
     ]
 
 
-def task_b_models() -> list[ModelSpec]:
+def task_b_models(tree: dict | None = None) -> list[ModelSpec]:
+    tree = TREE_CLASSIFICATION if tree is None else tree
+
     # SGD's epochs and LinearSVC's C depend on the number of fit rows, so they are
     # built at fit time: matched on the full split, on every CV fold and in the scaling study.
     def sgd(n):
@@ -96,11 +114,11 @@ def task_b_models() -> list[ModelSpec]:
 
     return [
         ModelSpec(OUR_TREE, lambda: DecisionTree(task="classification", random_state=SEED,
-                                                 **TREE_CLASSIFICATION), ours=True),
+                                                 **tree), ours=True),
         # The hinge loss is scale-sensitive: standardize with the fit rows' statistics.
         ModelSpec(OUR_SVM, lambda: baselines.StandardScaled(PegasosSVM(random_state=SEED, **SVM)),
                   ours=True),
-        ModelSpec(SK_TREE, lambda: baselines.sk_tree_classifier(TREE_CLASSIFICATION, SEED)),
+        ModelSpec(SK_TREE, lambda: baselines.sk_tree_classifier(tree, SEED)),
         ModelSpec(SK_SGD, lambda: baselines.SizedToFitData(sgd)),
         ModelSpec(SK_LINEAR_SVC, lambda: baselines.SizedToFitData(linear_svc)),
         ModelSpec(TRIVIAL, baselines.MajorityClassifier),
@@ -524,10 +542,13 @@ def _captions(config: dict, skipped: dict | None = None, n_train: int | None = N
     logged = "".join(f" The fit time of {evaluate.latex_escape(name)} includes evaluating its "
                      f"objective on every training row {k:,} times, so it grows with the "
                      "training-set size." for name, k in (objective_evals or {}).items())
+    per_size = (" Both trees are fitted on log(price per m$^2$, or per sot for land) and the "
+                "listing's log area is added back, so every metric is on log(price)."
+                if config.get("tree_task_a_target", "log(price)") != "log(price)" else "")
     return {
         "A": f"{prefix}Task A, regression on log(price). {cv}{test} Median APE = median of "
              "$|$predicted $-$ actual$|$ / actual price in AZN, as a fraction (0.12 = 12\\%)."
-             + not_shown("A"),
+             + per_size + not_shown("A"),
         "B": f"{prefix}Task B, premium vs standard (premium = above the training median "
              f"price). Precision, recall and F1 are for the premium class. {cv}{test} "
              f"{floor_b} n/a = not available (e.g. no AUC for a model without continuous "
@@ -582,6 +603,18 @@ def write_outputs(report: dict, results_dir: str, tables_dir: str) -> list[str]:
                                      ["task", "share_identical", "mean_abs_diff_log",
                                       "depth_ours", "depth_sklearn", "leaves_ours",
                                       "leaves_sklearn"]), "```"]
+    study = report.get("tree_study")
+    if study:
+        rows = [{"task": key, "target": study[key].get("target", "price tier"),
+                 "metric": study["metric"][key], "ours": study[key]["test_ours"],
+                 "sklearn": study[key]["test_sklearn"],
+                 "our_forest": study[key]["forest_test"],
+                 "sklearn_forest": study[key]["sklearn_forest_test"],
+                 **{k: study[key]["settings"][k] for k in ("criterion", "max_depth",
+                                                           "min_samples_leaf")}}
+                for key in ("task_a", "task_b")]
+        md += ["", "## Tree study: settings tuned on validation, test scores", "", "```",
+               evaluate.format_table(rows, list(rows[0])), "```"]
     path = os.path.join(results_dir, "results.md")
     with open(path, "w", encoding="utf-8") as f:
         f.write("\n".join(md) + "\n")
@@ -702,6 +735,39 @@ def _print_analysis(analysis: dict, agreement: dict) -> None:
         print(f"\nNote: {note}")
 
 
+TREE_SETTINGS = ("criterion", "max_depth", "min_samples_split", "min_samples_leaf",
+                 "min_impurity_decrease")
+
+
+def tree_study(data: dict, fig_dir: str) -> dict:
+    """Tune, benchmark and ensemble our tree (tree_experiments, Problems 4a, 5a, 9).
+
+    Tuning only looks at the validation split; the tuned settings are returned
+    for the trees in the headline tables, so both report the same tree.
+    """
+    X, parts = data["X"], ("train", "val", "test")
+    task_a = tuple(a for p in parts for a in (X[p], data["log_price"][p]))
+    task_b = tuple(a for p in parts for a in (X[p], data["tier"][p]))
+    names = data["feature_names"]
+    trees = tree_experiments.run(task_a, task_b, names, fig_dir=fig_dir)
+    forest = tree_experiments.run_forest(task_a, task_b, names, trees, fig_dir=fig_dir)
+    summary = {}
+    for key in ("task_a", "task_b"):
+        params, cmp = trees[key]["params"], trees[key]["comparison"]
+        summary[key] = {
+            "settings": {k: params.get(k, d) for k, d in zip(
+                TREE_SETTINGS, ("mse", None, 2, 1, 0.0), strict=True)},
+            "test_ours": cmp["ours"]["score"], "test_sklearn": cmp["sklearn"]["score"],
+            "same_structure": bool(cmp["same_structure"]),
+            "same_leaf_groups": bool(cmp["same_leaf_groups"]),
+            "forest_test": forest[key]["test_score"],
+            "sklearn_forest_test": forest[key]["sklearn_score"],
+        }
+    summary["task_a"]["target"] = trees["task_a"]["target"]
+    summary["metric"] = {"task_a": "RMSE of log(price)", "task_b": "F1 (premium)"}
+    return summary
+
+
 def main(argv: list[str] | None = None) -> dict:
     parser = argparse.ArgumentParser(description="Reproduce every number and figure.")
     parser.add_argument("--data", default=DATA_PATH, help="path to house_sale.csv")
@@ -711,6 +777,9 @@ def main(argv: list[str] | None = None) -> dict:
     parser.add_argument("--folds", type=int, default=None, help="CV folds (0 = no CV; default 5)")
     parser.add_argument("--boot", type=int, default=None, help="bootstrap samples (default 1000)")
     parser.add_argument("--no-scaling", action="store_true", help="skip the fit-time scaling study")
+    parser.add_argument("--no-tree-study", action="store_true",
+                        help="skip the tree tuning / sklearn comparison / forest study and use "
+                             "the fixed TREE_REGRESSION and TREE_CLASSIFICATION settings")
     parser.add_argument("--no-figures", action="store_true", help="skip writing figures")
     parser.add_argument("--results-dir", default=None, help=f"default {RESULTS_DIR}")
     parser.add_argument("--tables-dir", default=None, help=f"default {TABLES_DIR}")
@@ -735,12 +804,28 @@ def main(argv: list[str] | None = None) -> dict:
     print(f"Data: {sizes}, {len(data['feature_names'])} features, "
           f"tier threshold = {data['threshold']:,.0f} AZN (train median)")
 
+    # 1b. tree study: its validation-tuned settings and Task A target are the
+    # ones the trees use in the tables below
+    tree_a, tree_b, per_size, study = TREE_REGRESSION, TREE_CLASSIFICATION, False, None
+    if not args.no_tree_study:
+        print("Tree study (tuning on validation, scikit-learn comparison, random forest) ...",
+              flush=True)
+        if args.no_figures:
+            with tempfile.TemporaryDirectory() as scratch:
+                study = tree_study(data, scratch)
+        else:
+            study = tree_study(data, out_dirs["figures"])
+        tree_a = study["task_a"]["settings"]
+        tree_b = study["task_b"]["settings"]
+        per_size = study["task_a"]["target"] != "log(price)"
+
     # 2-4. models
-    print("Task A: regression on log(price)")
-    specs_a = task_a_models()
+    print("Task A: regression on log(price)"
+          + (" (trees fitted on log(price per m2 / sot), area added back)" if per_size else ""))
+    specs_a = task_a_models(tree_a, data["feature_names"], per_size)
     rows_a, outputs_a = run_task("A", specs_a, data, folds, n_boot)
     print("Task B: premium vs standard")
-    specs_b = task_b_models()
+    specs_b = task_b_models(tree_b)
     rows_b, outputs_b = run_task("B", specs_b, data, folds, n_boot)
 
     # 5. analysis
@@ -754,7 +839,9 @@ def main(argv: list[str] | None = None) -> dict:
                                      repeats=1 if args.fast else 3)
 
     # 6. output
-    config = {"tree_regression": TREE_REGRESSION, "tree_classification": TREE_CLASSIFICATION,
+    config = {"tree_regression": tree_a, "tree_classification": tree_b,
+              "tree_task_a_target": "log(price per m2 / sot)" if per_size else "log(price)",
+              "tree_settings_from": "fixed" if study is None else "tree study (validation)",
               "svm": SVM, "folds": folds, "n_boot": n_boot, "fast": args.fast}
     tables = {"A": result_rows(rows_a, "A"), "B": result_rows(rows_b, "B")}
     tables["headline"] = headline_rows(tables["A"], tables["B"])
@@ -770,6 +857,7 @@ def main(argv: list[str] | None = None) -> dict:
         "timing": timing_rows(rows_a, rows_b),
         "scaling": scaling,
         "tree_vs_sklearn": agreement,
+        "tree_study": study,
         "analysis": analysis,
     }
     for task, name in (("A", "Task A: log(price)"), ("B", "Task B: premium vs standard")):

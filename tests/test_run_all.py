@@ -349,3 +349,47 @@ def test_subsample_train_keeps_validation_and_test(monkeypatch):
     assert len(small["X"]["train"]) == len(small["df"]["train"]) == 100
     assert len(small["X"]["test"]) == len(data["X"]["test"])
     assert len(data["X"]["train"]) == 294, "the original dict is not modified"
+
+
+def _fake_data_with_land_area(path=None, fast=False):
+    """fake_data plus data_prep's land_area_sot column (0 = no separate land),
+    so the tree study trains Task A on log(price per m2) as on the real data."""
+    data = fake_data()
+    data["X"] = {p: np.hstack([X, np.zeros((len(X), 1))]) for p, X in data["X"].items()}
+    data["feature_names"] = data["feature_names"] + ["land_area_sot"]
+    return data
+
+
+def test_headline_trees_are_the_tree_studys_trees(tmp_path, monkeypatch):
+    """The tables score the tree the study tuned on validation, on the same target,
+    so the report has one Task A number for our tree, not two."""
+    monkeypatch.setattr(run_all, "load_data", _fake_data_with_land_area)
+    monkeypatch.setattr(run_all, "eda_figures", lambda path, out_dir: None)
+    report = run_all.main(["--folds", "0", "--boot", "20", "--no-scaling", "--no-figures",
+                           "--results-dir", str(tmp_path / "results"),
+                           "--tables-dir", str(tmp_path / "tables"),
+                           "--figures-dir", str(tmp_path / "figures")])
+    study, config = report["tree_study"], report["config"]
+    assert study["task_a"]["target"] == config["tree_task_a_target"] == "log(price per m2 / sot)"
+    assert config["tree_regression"] == study["task_a"]["settings"]
+    assert config["tree_classification"] == study["task_b"]["settings"]
+    tree_a = {r["model"]: r for r in report["task_a"]}[run_all.OUR_TREE]
+    assert tree_a["test"]["rmse_log"] == pytest.approx(study["task_a"]["test_ours"])
+    assert "added back" in (tmp_path / "tables" / "task_a.tex").read_text(encoding="utf-8")
+    assert not (tmp_path / "figures").exists(), "--no-figures writes no tree-study figures"
+
+
+def test_per_size_target_predicts_log_price():
+    from src.baselines import PerSizeTarget
+
+    data = _fake_data_with_land_area()
+    names, X, y = data["feature_names"], data["X"], data["log_price"]
+    model = PerSizeTarget(DecisionTreeRegressor(max_depth=3, random_state=0), names).fit(
+        X["train"], y["train"])
+    log_area = np.log(X["test"][:, names.index("area_m2")])
+    inner = model.model.predict(X["test"])
+    np.testing.assert_allclose(model.predict(X["test"]), inner + log_area)
+    # R2 on log(price) is what the tables report; on the per-m2 scale it is lower
+    r2 = run_all.evaluate.r2
+    assert r2(y["test"], model.predict(X["test"])) > r2(y["test"] - log_area, inner)
+    assert model.get_depth() == 3 and model.feature_importances_.shape == (len(names),)

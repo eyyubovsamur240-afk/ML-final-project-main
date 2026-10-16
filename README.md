@@ -89,8 +89,15 @@ python -m src.run_all            # full run (a few minutes)
 python -m src.run_all --fast     # smoke run: 3,000 training rows, 3 folds; writes to fast/ subfolders
 ```
 
-`run_all` cleans and splits the data (seed 42) and trains every model on the
-training split. For each model it reports 5-fold cross-validation on the training
+`run_all` cleans and splits the data (seed 42), then runs the tree study
+(`src/tree_experiments.py`): it tunes our tree's depth and leaf size (and Gini vs
+entropy for Task B) on the validation split, compares it with scikit-learn's node
+by node, and grows the random-forest bonus; its figures go to `report/figures/`.
+The tuned settings are the ones the trees use in every table below. For Task A both
+trees are fitted on log(price per m², or per sot for land plots) and the log area is
+added back, so they still predict log(price) and every metric is on that scale
+(`--no-tree-study` skips the study and uses the fixed settings in `run_all.py`).
+It then trains every model on the training split. For each model it reports 5-fold cross-validation on the training
 split (mean ± std), validation metrics, test metrics with 95% bootstrap intervals,
 and fit/predict times:
 
