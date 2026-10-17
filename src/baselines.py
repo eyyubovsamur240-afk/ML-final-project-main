@@ -13,21 +13,24 @@ baselines.py — what our from-scratch models are compared against (Problem 5).
     log(price), the target tree_experiments tunes them on.
 
 Matching notes (worth a sentence in the report):
-  * Pegasos minimises  lambda/2 ||w||^2 + (1/n) sum hinge.  SGDClassifier with
-    loss="hinge" and alpha=lambda minimises the same objective, except that it
-    leaves the intercept unregularised. Its "optimal" step 1/(alpha*(t+t0)) decays
-    like Pegasos' 1/(lambda*t) but starts smaller (t0 is about 1,000 here), and it
-    shuffles once per epoch instead of sampling rows with replacement. It runs whole
-    epochs, so it gets at least as many updates as Pegasos (epochs_for rounds up):
-    about 11% more on the full training split, under 1% more on a 3,000-row subsample.
+  * Pegasos minimises  lambda/2 (||w||^2 + b^2) + (1/n) sum hinge.  SGDClassifier
+    with loss="hinge" and alpha=lambda minimises the same objective, except that it
+    leaves the intercept unregularised. Its "optimal" step 1/(alpha*(t+t0)) has the
+    same form as our "offset" schedule (with its own t0), it takes one row per
+    update instead of a mini-batch, and it shuffles once per epoch instead of
+    sampling rows with replacement. It gets the same number of epochs (our epoch =
+    ceil(n/B) batches of B rows, about n rows) and, when ours averages, averages over
+    the second half of its updates too.
   * LinearSVC minimises 1/2 ||w||^2 + C sum hinge, the same problem when
-    C = 1/(lambda*n), with n the number of FIT rows. On the full training split it
-    stops at max_iter with a ConvergenceWarning (recorded by run_all). max_iter is a
-    time cap, not a tuned setting, and the report says LinearSVC is not run to the
-    exact optimum.
+    C = 1/(lambda*n), with n the number of FIT rows; liblinear appends a constant
+    feature for the intercept, so it regularises b like ours. On the full training
+    split it may stop at max_iter with a ConvergenceWarning (recorded by run_all).
+    max_iter is a time cap, not a tuned setting.
+  * Our RFF SVM (rff.py) is matched by RBFSampler (the same feature distribution,
+    with the same gamma and D, its own random draw) followed by SGDClassifier as above.
   * scikit-learn weights min_impurity_decrease by the node's share of the
-    training rows (N_t/N); if our tree uses the unweighted gain, the same number
-    prunes differently. Leave it at 0.0 for a like-for-like comparison.
+    training rows (N_t/N), and so does our tree, so the same number prunes the
+    same way. It is left at 0.0 in every comparison.
 """
 
 from __future__ import annotations
@@ -35,6 +38,7 @@ from __future__ import annotations
 import math
 
 import numpy as np
+from sklearn.kernel_approximation import RBFSampler
 from sklearn.linear_model import SGDClassifier
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
@@ -66,13 +70,27 @@ def sk_tree_classifier(params: dict, seed: int = 42) -> DecisionTreeClassifier:
     return DecisionTreeClassifier(**_tree_kwargs(params, seed))
 
 
-def sk_sgd_hinge(lambda_: float, epochs: int, seed: int = 42):
-    """Pegasos' twin: scaled features -> SGD on the hinge loss with alpha = lambda."""
-    return make_pipeline(
-        StandardScaler(),
-        SGDClassifier(loss="hinge", penalty="l2", alpha=lambda_, learning_rate="optimal",
-                      max_iter=max(1, int(epochs)), tol=None, random_state=seed),
-    )
+def _sgd_hinge(lambda_: float, epochs: int, seed: int, average_from: int | None):
+    # average_from: averaging starts once SGD has seen that many rows (None = no averaging)
+    return SGDClassifier(loss="hinge", penalty="l2", alpha=lambda_, learning_rate="optimal",
+                         max_iter=max(1, int(epochs)), tol=None, random_state=seed,
+                         average=max(1, average_from) if average_from is not None else False)
+
+
+def sk_sgd_hinge(lambda_: float, epochs: int, seed: int = 42, average_from: int | None = None):
+    """Pegasos' twin: scaled features -> SGD on the hinge loss with alpha = lambda.
+
+    average_from = rows seen before averaging starts: epochs * n // 2 averages the
+    second half of the updates, like our SVM's suffix average."""
+    return make_pipeline(StandardScaler(), _sgd_hinge(lambda_, epochs, seed, average_from))
+
+
+def sk_rff_sgd_hinge(gamma: float, n_components: int, lambda_: float, epochs: int,
+                     seed: int = 42, average_from: int | None = None):
+    """Our RFF SVM's twin: scaled features -> RBFSampler (same gamma and D) -> SGD (hinge)."""
+    return make_pipeline(StandardScaler(),
+                         RBFSampler(gamma=gamma, n_components=n_components, random_state=seed),
+                         _sgd_hinge(lambda_, epochs, seed, average_from))
 
 
 def sk_linear_svc(lambda_: float, n_train: int, seed: int = 42, max_iter: int = 20_000):

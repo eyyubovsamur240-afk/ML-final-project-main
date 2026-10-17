@@ -14,16 +14,23 @@ What it does:
      the trees use below (--no-tree-study keeps TREE_REGRESSION / _CLASSIFICATION
      and writes to no_tree_study/ subfolders, so the report's outputs are kept;
      a checkout without src/tree_experiments.py keeps them too)
+  1c. the SVM study (src/svm_study.py, Problems 3 and 4b): sweeps lambda, checks
+     convergence against LinearSVC, compares learning-rate schedules and tunes the
+     random-Fourier-features SVM, all on the validation split; the chosen settings
+     are the ones the SVMs use below (--no-svm-study keeps SVM / SVM_RFF and writes
+     to no_svm_study/ subfolders)
   2. Task A, log(price): our decision tree vs DecisionTreeRegressor vs the train mean
-  3. Task B, price tier: our decision tree and our Pegasos SVM vs scikit-learn's
-     DecisionTreeClassifier, SGDClassifier (hinge) and LinearSVC, and the majority class
+  3. Task B, price tier: our decision tree, our Pegasos SVM and our RFF SVM vs
+     scikit-learn's DecisionTreeClassifier, SGDClassifier (hinge), LinearSVC and
+     RBFSampler + SGDClassifier, and the majority class
   4. every model: k-fold CV on the training split (mean ± std), validation
      metrics, test metrics with 95% bootstrap intervals, fit and predict times,
      and how closely our tree reproduces scikit-learn's (Problem 5)
   5. error analysis, feature importance, fit-time scaling, figures (Problem 6),
      plus the data-exploration figures from src/eda.py when it exists
   6. writes results/metrics.json, results/results.md, report/tables/*.tex
-     (results, timing, tree study and forest, error analysis) and
+     (results, timing, tree study and forest, SVM study, error analysis, the
+     dataset table and numbers.tex, the numbers the report's text quotes) and
      report/figures/eval_*.pdf, and prints the comparison tables
      (--fast writes to results/fast/, report/tables/fast/, report/figures/fast/)
 
@@ -50,6 +57,7 @@ import numpy as np
 
 from . import baselines, data_prep, error_analysis, evaluate, plots
 from .decision_tree import DecisionTree
+from .rff import RFFSVM
 from .svm import PegasosSVM
 
 SEED = data_prep.SEED
@@ -59,24 +67,28 @@ TABLES_DIR = os.path.join("report", "tables")
 FIGURES_DIR = plots.FIGURES_DIR
 
 # --- Final hyperparameters (Problem 4c) ----------------------------------------
-# A normal run takes the tree settings from the tree study, which tunes them on
-# the VALIDATION split (tree_experiments.run); TREE_REGRESSION and
-# TREE_CLASSIFICATION are only the --no-tree-study fallback. SVM is fixed: no
-# code tunes lambda_ or n_iters yet (Problem 4b). The scikit-learn baselines
-# reuse the same values, which is what makes the comparison in Problem 5 a
-# matched one.
+# A normal run takes the tree settings from the tree study and the SVM settings
+# from the SVM study, which tune them on the VALIDATION split
+# (tree_experiments.run, svm_study.run); the values below are only the
+# --no-tree-study / --no-svm-study fallback. The scikit-learn baselines reuse
+# the same values, which is what makes the comparison in Problem 5 a matched one.
 TREE_REGRESSION = {"criterion": "mse", "max_depth": 12, "min_samples_split": 2,
                    "min_samples_leaf": 5, "min_impurity_decrease": 0.0}
 TREE_CLASSIFICATION = {"criterion": "gini", "max_depth": 10, "min_samples_split": 2,
                        "min_samples_leaf": 5, "min_impurity_decrease": 0.0}
-SVM = {"lambda_": 1e-4, "n_iters": 200_000}
+SVM = {"lambda_": 3e-4, "n_epochs": 50, "batch_size": 32, "average": True,
+       "schedule": "offset"}
+SVM_RFF = {"gamma": 3e-3, "lambda_": 1e-6, "n_components": 1024, "n_epochs": 50,
+           "batch_size": 32, "average": True, "schedule": "offset"}
 
 # Model names are shared by both tasks so the headline table lines them up.
 OUR_TREE = "Ours: decision tree"
 OUR_SVM = "Ours: SVM (Pegasos)"
+OUR_RFF = "Ours: SVM (RFF)"
 SK_TREE = "sklearn: decision tree"
 SK_SGD = "sklearn: SGD (hinge)"
 SK_LINEAR_SVC = "sklearn: LinearSVC"
+SK_RFF = "sklearn: RFF + SGD (hinge)"
 TRIVIAL = "Trivial baseline"
 
 
@@ -106,26 +118,40 @@ def task_a_models(tree: dict | None = None, feature_names: list[str] | None = No
     ]
 
 
-def task_b_models(tree: dict | None = None) -> list[ModelSpec]:
+def task_b_models(tree: dict | None = None, svm: dict | None = None,
+                  rff: dict | None = None) -> list[ModelSpec]:
     tree = TREE_CLASSIFICATION if tree is None else tree
+    svm = SVM if svm is None else svm
+    rff = SVM_RFF if rff is None else rff
 
-    # SGD's epochs and LinearSVC's C depend on the number of fit rows, so they are
-    # built at fit time: matched on the full split, on every CV fold and in the scaling study.
+    # LinearSVC's C and the row SGD starts averaging at depend on the number of fit
+    # rows, so they are built at fit time: matched on the full split, on every CV
+    # fold and in the scaling study.
+    def average_from(params, n):  # our SVMs average the second half of their steps
+        return params["n_epochs"] * n // 2 if params.get("average") else None
+
     def sgd(n):
-        return baselines.sk_sgd_hinge(SVM["lambda_"], baselines.epochs_for(SVM["n_iters"], n), SEED)
+        return baselines.sk_sgd_hinge(svm["lambda_"], svm["n_epochs"], SEED, average_from(svm, n))
 
     def linear_svc(n):
-        return baselines.sk_linear_svc(SVM["lambda_"], n, SEED)
+        return baselines.sk_linear_svc(svm["lambda_"], n, SEED)
+
+    def rff_sgd(n):
+        return baselines.sk_rff_sgd_hinge(rff["gamma"], rff["n_components"], rff["lambda_"],
+                                          rff["n_epochs"], SEED, average_from(rff, n))
 
     return [
         ModelSpec(OUR_TREE, lambda: DecisionTree(task="classification", random_state=SEED,
                                                  **tree), ours=True),
         # The hinge loss is scale-sensitive: standardize with the fit rows' statistics.
-        ModelSpec(OUR_SVM, lambda: baselines.StandardScaled(PegasosSVM(random_state=SEED, **SVM)),
+        ModelSpec(OUR_SVM, lambda: baselines.StandardScaled(PegasosSVM(random_state=SEED, **svm)),
+                  ours=True),
+        ModelSpec(OUR_RFF, lambda: baselines.StandardScaled(RFFSVM(random_state=SEED, **rff)),
                   ours=True),
         ModelSpec(SK_TREE, lambda: baselines.sk_tree_classifier(tree, SEED)),
         ModelSpec(SK_SGD, lambda: baselines.SizedToFitData(sgd)),
         ModelSpec(SK_LINEAR_SVC, lambda: baselines.SizedToFitData(linear_svc)),
+        ModelSpec(SK_RFF, lambda: baselines.SizedToFitData(rff_sgd)),
         ModelSpec(TRIVIAL, baselines.MajorityClassifier),
     ]
 
@@ -231,6 +257,12 @@ def _fit_and_score(spec: ModelSpec, task: str, data: dict, folds: int,
     history = getattr(model, "history_", None)
     if isinstance(history, (list, tuple, np.ndarray)) and len(history):
         row["objective_evaluations"] = len(history)
+    # Our SVMs' margin 2/||w|| and support vectors on the training split (Problem 3c).
+    margin = getattr(model, "margin_", None)
+    if isinstance(margin, (float, int)) and getattr(model, "n_support_", None) is not None:
+        row["svm"] = {"margin": float(margin), "w_norm": float(model.w_norm_),
+                      "n_support": int(model.n_support_),
+                      "support_share": int(model.n_support_) / len(y["train"])}
 
     # 95% bootstrap intervals on the test set for the headline metrics.
     if task == "A":
@@ -334,7 +366,9 @@ def analyse(data: dict, outputs_a: dict, outputs_b: dict, perm_repeats: int) -> 
                                     "impurity-decrease importance is missing (Problem 6)")
             out["importance"][f"{task}: {name}"] = entry
             w = _linear_weights(model)
-            if w is not None and len(w) == len(data["feature_names"]):
+            # the RFF SVMs' weights are on the random features, not on our columns
+            if (w is not None and len(w) == len(data["feature_names"])
+                    and name not in (OUR_RFF, SK_RFF)):
                 out["svm_weights"][name] = error_analysis.top_weights(w, data["feature_names"], 15)
     return out
 
@@ -525,6 +559,329 @@ def tree_study_rows(study: dict) -> list[dict]:
     return [{"item": item, "task_a": value_a, "task_b": value_b} for item, value_a, value_b in items]
 
 
+class Tex(str):
+    """A table cell that is already LaTeX (math), so _latex_cells keeps it unescaped."""
+
+
+def _latex_cells(build, rows: list[dict], *args, **kwargs) -> str:
+    """build(rows, ...) (evaluate.latex_table or _panel_table) with Tex cells kept as LaTeX.
+
+    latex_table escapes every text cell; a Tex cell goes in as a plain token and is put
+    back after.
+    """
+    tokens: dict[str, str] = {}
+
+    def swap(value):
+        if isinstance(value, Tex):
+            token = f"TEXCELL{len(tokens)}X"
+            tokens[token] = str(value)
+            return token
+        return value
+
+    if rows and isinstance(rows[0], tuple):  # _panel_table: [(title, rows), ...]
+        swapped = [(title, [{k: swap(v) for k, v in row.items()} for row in panel])
+                   for title, panel in rows]
+    else:
+        swapped = [{k: swap(v) for k, v in row.items()} for row in rows]
+    text = build(swapped, *args, **kwargs)
+    for token, value in tokens.items():
+        text = text.replace(token, value)
+    return text
+
+
+def _sci(x: float, latex: bool) -> str:
+    """3e-4 -> 3x10^-4 in LaTeX (works in text and math), 3e-04 in plain text."""
+    if x == 0:
+        return "0"
+    exp = math.floor(math.log10(abs(x)) + 1e-9)
+    mant = f"{x / 10 ** exp:.2g}"
+    if not latex:
+        return f"{mant}e{exp:+03d}"
+    return Tex(rf"\ensuremath{{10^{{{exp}}}}}" if mant == "1"
+               else rf"\ensuremath{{{mant}\times10^{{{exp}}}}}")
+
+
+def _pct(share: float, digits: int = 1) -> str:
+    return f"{100 * share:.{digits}f}%"
+
+
+SCHEDULE_TEX = {"pegasos": r"$1/(\lambda t)$", "offset": r"$1/(\lambda(t+t_0))$",
+                "constant": r"constant $\eta_0$"}
+SCHEDULE_TEXT = {"pegasos": "1/(lambda t)", "offset": "1/(lambda (t + t0))",
+                 "constant": "constant eta0"}
+
+
+def _schedule(name: str, latex: bool) -> str:
+    return Tex(SCHEDULE_TEX[name]) if latex else SCHEDULE_TEXT[name]
+
+
+def _test_scores(rows_b: list[dict], model: str) -> str:
+    row = next((r for r in rows_b if r["model"] == model and r.get("status") == "ok"), None)
+    if row is None:
+        return "n/a"
+    auc = row["test"].get("roc_auc")
+    return f"{row['test']['f1']:.3f} / " + ("n/a" if auc is None else f"{auc:.3f}")
+
+
+def svm_study_rows(study: dict, rows_b: list[dict], latex: bool = False) -> list[dict]:
+    """The SVM study's chosen settings and scores: one column per SVM (linear, RFF)."""
+    lin, rff = study["linear"], study["rff"]
+    ls, rs = lin["settings"], rff["settings"]
+    cell = next(r for r in rff["grid"] if (r["gamma"], r["lambda_"]) == (rs["gamma"], rs["lambda_"]))
+    final = next(r for r in study["convergence"]["rows"]
+                 if r["average"] and r["epochs"] == ls["n_epochs"])
+    sym = (lambda t, p: Tex(t) if latex else p)  # noqa: E731
+    items = [
+        ("Features", "standardized columns", f"RFF, D = {rs['n_components']:,}"),
+        (sym(r"$\lambda$ (validation F1)", "lambda (validation F1)"),
+         _sci(ls["lambda_"], latex), _sci(rs["lambda_"], latex)),
+        (sym(r"$\gamma$ (validation F1)", "gamma (validation F1)"), "", _sci(rs["gamma"], latex)),
+        ("Epochs / batch size", f"{ls['n_epochs']} / {ls['batch_size']}",
+         f"{rs['n_epochs']} / {rs['batch_size']}"),
+        ("Step size (second half averaged)", _schedule(ls["schedule"], latex),
+         _schedule(rs["schedule"], latex)),
+        (sym(r"$\eta_0 = 1/\overline{\lVert x\rVert^2}$", "eta0 = 1 / mean ||x||^2"),
+         f"{final['eta0']:.3g}", f"{cell['eta0']:.3g}"),
+        (sym(r"$\lVert w\rVert$ / margin $2/\lVert w\rVert$", "||w|| / margin 2/||w||"),
+         f"{lin['w_norm']:.3g} / {lin['margin']:.3g}", f"{cell['w_norm']:.3g} / {cell['margin']:.3g}"),
+        ("Support vectors (share of training rows)", _pct(lin["support_share"]),
+         _pct(cell["support_share"])),
+        (sym(r"Objective $J$ (gap to LinearSVC)", "objective J (gap to LinearSVC)"),
+         f"{lin['objective']:.4f} ({100 * lin['objective_gap']:+.2f}%)", f"{cell['objective']:.4f}"),
+        ("Kernel approximation error", "", f"{rff['kernel_error']:.4f}"
+         if rff.get("kernel_error") is not None else "n/a"),
+        ("Validation F1 / AUC", f"{lin['validation']['f1']:.3f} / {lin['validation']['auc']:.3f}",
+         f"{rff['validation']['f1']:.3f} / {rff['validation']['auc']:.3f}"),
+        ("Test F1 / AUC (scored once)", _test_scores(rows_b, OUR_SVM), _test_scores(rows_b, OUR_RFF)),
+    ]
+    return [{"item": item, "linear": a, "rff": b} for item, a, b in items]
+
+
+def svm_convergence_panels(study: dict, latex: bool = False) -> list[tuple[str, list[dict]]]:
+    """Convergence of the linear SVM at the chosen lambda, then the step-size schedules."""
+    conv, ref = study["convergence"], study["convergence"]["reference"]
+    lam, epochs = study["linear"]["settings"]["lambda_"], study["linear"]["settings"]["n_epochs"]
+
+    def row(label, r):
+        return {"setting": label, "steps": r["n_steps"], "objective": r["objective"],
+                "gap": f"{100 * r['gap']:+.2f}%", "margin": r["margin"],
+                "support": _pct(r["support_share"]), "val_f1": r["val_f1"],
+                "fit_seconds": r["fit_seconds"]}
+
+    first = [row("1 row per step, 1/(lambda t), last iterate" if not latex else
+                 Tex(r"1 row per step, $1/(\lambda t)$, last iterate"), r)
+             for r in conv["rows"] if r["batch_size"] == 1]
+    batched = [row(f"batch {r['batch_size']}, {r['epochs']} epochs, "
+                   + ("averaged" if r["average"] else "last iterate"), r)
+               for r in conv["rows"] if r["batch_size"] != 1]
+    reference = [{"setting": "LinearSVC (reference)", "steps": None, "objective": ref["objective"],
+                  "gap": "0", "margin": ref["margin"], "support": _pct(ref["support_share"]),
+                  "val_f1": None, "fit_seconds": ref["fit_seconds"]}]
+    schedules = [row(_schedule(r["schedule"], latex), r) for r in study["schedules"]]
+    lam_text = _sci(lam, latex)
+    return [(f"Convergence at lambda = {lam_text}" if not latex
+             else rf"Convergence at $\lambda$ = {lam_text}", first + batched + reference),
+            (f"Step-size schedule, batch {study['grids']['batch_size']}, {epochs} epochs, averaged",
+             schedules)]
+
+
+SVM_CONVERGENCE_TABLE = (["setting", "steps", "objective", "gap", "margin", "support", "val_f1",
+                          "fit_seconds"],
+                         ["Setting", "Steps", "J", "Gap to LinearSVC", "Margin", "SV share",
+                          "Val F1", "Fit (s)"],
+                         ["Setting", "Steps", "$J$", "Gap", r"$2/\lVert w\rVert$", "SV",
+                          "Val F1", "Fit (s)"])
+
+
+def svm_rff_rows(study: dict) -> list[dict]:
+    return [{"n_components": r["n_components"], "val_f1": r["val_f1"], "val_auc": r["val_auc"],
+             "kernel_error": f"{r['kernel_error']:.4f}", "margin": r["margin"],
+             "fit_seconds": r["fit_seconds"]} for r in study["rff"]["components"]]
+
+
+SVM_RFF_TABLE = (["n_components", "val_f1", "val_auc", "kernel_error", "margin", "fit_seconds"],
+                 ["D", "Val F1", "Val AUC", "Kernel error", "Margin", "Fit (s)"],
+                 ["$D$", "Val F1", "Val AUC", "Kernel error", r"$2/\lVert w\rVert$", "Fit (s)"])
+
+
+def _svm_captions(config: dict, study: dict) -> dict:
+    from . import svm_study as svm_module
+
+    prefix = "SMOKE RUN (training split subsampled to 3,000 rows). " if config["fast"] else ""
+    grids = study["grids"]
+
+    def values(xs):
+        return ", ".join(_sci(x, latex=True) for x in xs)
+
+    ref = study["convergence"]["reference"]
+    stopped = ("" if ref["converged"] else
+               f" LinearSVC stopped at its {ref['max_iter']:,}-iteration cap, so its $J$ is "
+               "an upper bound on the optimum and a negative gap means ours went lower.")
+    return {
+        "study": f"{prefix}SVM study (\\texttt{{src/svm\\_study.py}}): the settings of our two SVMs, "
+                 "chosen on the validation split, and their scores. Linear SVM: $\\lambda \\in$ "
+                 f"\\{{{values(grids['lambdas'])}\\}}; RFF SVM: $\\gamma \\in$ "
+                 f"\\{{{values(grids['rff_gammas'])}\\}} $\\times$ $\\lambda \\in$ "
+                 f"\\{{{values(grids['rff_lambdas'])}\\}}, both by validation F1 (on a tie the "
+                 "larger $\\lambda$, then the smaller $\\gamma$, wins). The epochs are the fewest of "
+                 f"\\{{{', '.join(str(e) for e in grids['epochs'])}\\}} whose objective comes within "
+                 f"{100 * grids['tolerance']:g}\\% of LinearSVC's at the same $\\lambda$ "
+                 "(Table~\\ref{tab:svm-convergence}). Margin $2/\\lVert w\\rVert$ in standardized "
+                 "units (RFF: in the space of the random features); support vectors are the "
+                 "training rows with $y f(x) \\le 1$. Test: the headline models, scored once.",
+        "convergence": f"{prefix}Convergence of our linear Pegasos SVM at the chosen $\\lambda$ "
+                       "on the training split: final objective $J$, its gap to LinearSVC's $J$ "
+                       "at the same $\\lambda$ ($C = 1/(\\lambda n)$; the same objective, bias "
+                       "included), the margin, the share of support vectors, validation F1 and "
+                       "fit time. Top: the first version's setting (one row per step, "
+                       f"{svm_module.FIRST_VERSION['n_iters']:,} steps, $\\eta_t = 1/(\\lambda t)$, "
+                       "last iterate) against mini-batches with the offset schedule, with and "
+                       "without averaging over the second half of the steps. Bottom: the three "
+                       "schedules at the chosen epochs, with $\\eta_0 = 1/\\overline{\\lVert "
+                       "x\\rVert^2}$ and $t_0 = 1/(\\lambda\\eta_0)$." + stopped,
+        "rff": f"{prefix}Our RFF SVM at the chosen $\\gamma$ and $\\lambda$ with $D$ random "
+               "features: validation F1 and AUC, mean $|z(x)^\\top z(x') - k(x, x')|$ over all "
+               "pairs of 500 training rows, margin in the feature space and fit time (feature "
+               "map included). Figure~\\ref{fig:svm-rff} shows the $\\gamma \\times \\lambda$ "
+               "grid.",
+    }
+
+
+DATA_STEP_LABELS = {"Houses with unknown room count":
+                    "Unknown room count (categories that have rooms)"}
+
+
+def data_rows(report: dict) -> list[tuple[str, list[dict]]]:
+    """The dataset table: rows removed by each cleaning step, then the data the models see."""
+    d = report["data"]
+    cleaning = d.get("cleaning") or {}
+    steps = [{"item": DATA_STEP_LABELS.get(s["step"], s["step"]),
+              "removed": int(s["rows_removed"]) if i else "", "left": int(s["rows_left"])}
+             for i, s in enumerate(cleaning.get("steps", []))]
+    share = d["premium_share"]
+    dup = d["cross_split_duplicates"]
+    final = [
+        {"item": "Features (one-hot columns counted)", "removed": "", "left": d["n_features"]},
+        {"item": "Training / validation / test listings", "removed": "",
+         "left": f"{d['train']:,} / {d['val']:,} / {d['test']:,}"},
+        {"item": "Premium share: training / validation / test", "removed": "",
+         "left": " / ".join(_pct(share[p]) for p in ("train", "val", "test"))},
+        {"item": "Tier threshold (training median, AZN)", "removed": "",
+         "left": f"{d['tier_threshold_azn']:,.0f}"},
+        {"item": "Validation/test listings with a twin in another split", "removed": "",
+         "left": f"{dup['with_twin']:,} ({_pct(dup['share'])})"},
+    ]
+    return [("Cleaning (\\texttt{src/data\\_prep.py}), in order", steps),
+            ("Data the models see", final)]
+
+
+def _data_caption(config: dict, report: dict) -> str:
+    prefix = "SMOKE RUN (training split subsampled to 3,000 rows). " if config["fast"] else ""
+    key = ", ".join(evaluate.latex_escape(c) for c in report["data"]["cross_split_duplicates"]["key"])
+    return (f"{prefix}Dataset summary. Top: rows removed by each cleaning step and rows left. "
+            "Bottom: the data the models see; premium = above the training median price. A twin "
+            f"has the same {key} as a listing in another split: a re-post that the cleaning keeps "
+            "because its listing ID or description differs.")
+
+
+# --- numbers the report's text quotes --------------------------------------------
+def _int(n) -> str:
+    return f"{int(n):,}".replace(",", "{,}")
+
+
+def report_numbers(report: dict) -> dict[str, str]:
+    """Name -> LaTeX value, for tables/numbers.tex (\\val{Name} in report.tex).
+
+    A number whose source is missing (a study skipped, no CSV for the cleaning
+    log) is left out, and the report then prints its name as a visible gap.
+    """
+    out: dict[str, str] = {}
+
+    def put(name, fn):
+        try:
+            value = fn()
+        except (KeyError, TypeError, StopIteration, IndexError, ValueError):
+            return
+        if value is not None:
+            out[name] = str(value)
+
+    d = report["data"]
+    put("NRows", lambda: _int(d["train"] + d["val"] + d["test"]))
+    put("NFeatures", lambda: _int(d["n_features"]))
+    for name, part in (("NTrain", "train"), ("NVal", "val"), ("NTest", "test")):
+        put(name, lambda part=part: _int(d[part]))
+    put("TierThreshold", lambda: _int(round(d["tier_threshold_azn"])))
+    put("PremiumSharePct", lambda: f"{100 * d['test_premium_share']:.1f}")
+    put("NCrossSplitDup", lambda: _int(d["cross_split_duplicates"]["with_twin"]))
+    put("PctCrossSplitDup", lambda: f"{100 * d['cross_split_duplicates']['share']:.1f}")
+    steps = (d.get("cleaning") or {}).get("steps", [])
+    names = ["NRawRows", "NRemovedScrapes", "NRemovedOutliers", "NRemovedIds", "NRemovedReposts",
+             "NRemovedRooms", "NRemovedCoords"]
+    if len(steps) == len(names):
+        out["NRawRows"] = _int(steps[0]["rows_left"])
+        for name, step in zip(names[1:], steps[1:], strict=True):
+            out[name] = _int(step["rows_removed"])
+
+    a = {r["model"]: r for r in report["tables"]["A"]}
+    b = {r["model"]: r for r in report["tables"]["B"]}
+    for name, model in (("TreeARmse", OUR_TREE), ("SkTreeARmse", SK_TREE),
+                        ("TrivialARmse", TRIVIAL)):
+        put(name, lambda model=model: f"{a[model]['test_rmse']['value']:.3f}")
+    put("TreeAMapePct", lambda: f"{100 * a[OUR_TREE]['test_mape']:.1f}")
+    for prefix, model in (("Tree", OUR_TREE), ("Svm", OUR_SVM), ("Rff", OUR_RFF),
+                          ("LinearSvc", SK_LINEAR_SVC), ("Sgd", SK_SGD), ("SkTree", SK_TREE),
+                          ("SkRff", SK_RFF), ("Trivial", TRIVIAL)):
+        put(f"{prefix}BFOne", lambda model=model: f"{b[model]['test_f1']['value']:.3f}")
+        put(f"{prefix}BAuc", lambda model=model: f"{b[model]['test_auc']['value']:.3f}")
+
+    tree = report.get("tree_study")
+    if tree:
+        ta, tb = tree["task_a"], tree["task_b"]
+
+        def depth(s):
+            return "unlimited" if s["settings"]["max_depth"] is None else s["settings"]["max_depth"]
+
+        put("TreeADepth", lambda: depth(ta))
+        put("TreeALeaf", lambda: ta["settings"]["min_samples_leaf"])
+        put("TreeBCriterion", lambda: {"gini": "Gini"}.get(tb["settings"]["criterion"],
+                                                            tb["settings"]["criterion"]))
+        put("TreeBDepth", lambda: depth(tb))
+        put("TreeBLeaf", lambda: tb["settings"]["min_samples_leaf"])
+        put("TreeAgreeA", lambda: f"{ta['prediction_agreement']:.3f}")
+        put("TreeAgreeB", lambda: f"{tb['prediction_agreement']:.3f}")
+        put("ForestARmse", lambda: f"{ta['forest_test']:.3f}")
+        put("ForestBFOne", lambda: f"{tb['forest_test']:.3f}")
+
+    svm = report.get("svm_study")
+    if svm:
+        lin, rff = svm["linear"], svm["rff"]
+        put("SvmLambda", lambda: _sci(lin["settings"]["lambda_"], latex=True))
+        put("SvmEpochs", lambda: lin["settings"]["n_epochs"])
+        put("SvmBatch", lambda: lin["settings"]["batch_size"])
+        put("SvmMargin", lambda: f"{lin['margin']:.3f}")
+        put("SvmSupportPct", lambda: f"{100 * lin['support_share']:.1f}")
+        put("SvmObjGapPct", lambda: f"{100 * lin['objective_gap']:.2f}")
+        put("SvmValFOne", lambda: f"{lin['validation']['f1']:.3f}")
+        put("SvmEtaZero", lambda: f"{svm['schedules'][0]['eta0']:.3g}")
+        first = [r["gap"] for r in svm["convergence"]["rows"] if r["batch_size"] == 1]
+        put("PegasosOldObjGapPct", lambda: f"{100 * first[0]:.0f}")
+        put("RffGamma", lambda: _sci(rff["settings"]["gamma"], latex=True))
+        put("RffLambda", lambda: _sci(rff["settings"]["lambda_"], latex=True))
+        put("RffD", lambda: _int(rff["settings"]["n_components"]))
+        put("RffApproxErr", lambda: f"{rff['kernel_error']:.3f}")
+        put("RffValFOne", lambda: f"{rff['validation']['f1']:.3f}")
+    return out
+
+
+def numbers_tex(numbers: dict[str, str], fast: bool) -> str:
+    lines = ["% Written by python -m src.run_all: the numbers the report's text quotes.",
+             "% report.tex prints one with \\val{Name}; a name missing here prints as [Name?].",
+             *(["% SMOKE RUN (--fast): not the report's numbers."] if fast else []),
+             r"\providecommand{\defval}[2]{\expandafter\def\csname val@#1\endcsname{#2}}"]
+    lines += [rf"\defval{{{name}}}{{{value}}}" for name, value in sorted(numbers.items())]
+    return "\n".join(lines) + "\n"
+
+
 def _records(table) -> list[dict]:
     """An error-analysis table (a DataFrame, or its records once loaded from JSON) as dicts."""
     if table is None:
@@ -537,12 +894,13 @@ ERROR_GROUPINGS = (("by_category", "By property category"),
                    ("by_district_coverage", "By training listings in the district"))
 ERROR_COLUMNS = {("task_a", OUR_TREE): {"median_ape": "a_ape", "bias_log": "a_bias"},
                  ("task_b", OUR_TREE): {"error_rate": "b_tree"},
-                 ("task_b", OUR_SVM): {"error_rate": "b_svm"}}
+                 ("task_b", OUR_SVM): {"error_rate": "b_svm"},
+                 ("task_b", OUR_RFF): {"error_rate": "b_rff"}}
 
 
 def error_rows(analysis: dict, grouping: str) -> list[dict]:
     """Test errors per group: Task A median APE and bias of our tree, Task B error rate of
-    our tree and our SVM (missing = n/a, e.g. for a model that is not implemented yet)."""
+    our tree and our two SVMs (missing = n/a, e.g. for a model that is not implemented yet)."""
     rows: dict[str, dict] = {}
     for (task, model), columns in ERROR_COLUMNS.items():
         for rec in _records(analysis[task].get(model, {}).get(grouping)):
@@ -571,10 +929,11 @@ def worst_rows(analysis: dict, n: int = 8) -> list[dict]:
             for rec in _records(analysis["task_a"].get(OUR_TREE, {}).get("worst"))[:n]]
 
 
-ERROR_TABLE = (["group", "n", "a_ape", "a_bias", "b_tree", "b_svm"],
+ERROR_TABLE = (["group", "n", "a_ape", "a_bias", "b_tree", "b_svm", "b_rff"],
                ["Group", "n", "A: median APE, our tree", "A: bias (log), our tree",
-                "B: error rate, our tree", "B: error rate, our SVM"],
-               ["Group", "$n$", "A: median APE", "A: bias", "B: error, tree", "B: error, SVM"])
+                "B: error rate, our tree", "B: error rate, our SVM", "B: error rate, our RFF SVM"],
+               ["Group", "$n$", "A: median APE", "A: bias", "B: error, tree", "B: error, SVM",
+                "B: error, RFF"])
 WORST_TABLE = (["category", "location", "area_m2", "land_area_sot", "price", "predicted", "error"],
                ["Category", "Location", "Area (m2)", "Land (sot)", "Price (AZN)", "Predicted (AZN)",
                 "Error"],
@@ -700,7 +1059,8 @@ def _analysis_captions(config: dict, study: dict | None, n_worst: int) -> dict:
         "errors": f"{prefix}Where our models fail on the test split. Per group: the number of "
                   "test listings, Task~A median $|$predicted $-$ actual$|$ / actual price and "
                   "mean error of $\\log(\\text{price})$ (bias; $>0$ = over-priced) of our tree, "
-                  "and the Task~B error rate of our tree and our SVM. District coverage counts "
+                  "and the Task~B error rate of our tree and our two SVMs (linear and RFF). "
+                  "District coverage counts "
                   "the training listings in the listing's district. n/a = no result for that "
                   "model.",
         "worst": f"{prefix}The {n_worst} test listings our tree misprices most on Task~A, "
@@ -782,6 +1142,32 @@ def write_outputs(report: dict, results_dir: str, tables_dir: str) -> list[str]:
         md += ["", "## Tree study: settings tuned on validation, test scores, random forest", "",
                "```", evaluate.format_table(tree_study_rows(study), ["item", "task_a", "task_b"],
                                             ["", "Task A", "Task B"]), "```"]
+    svm = report.get("svm_study")
+    if svm:
+        md += ["", "## SVM study: settings chosen on validation", "", "```",
+               evaluate.format_table(svm_study_rows(svm, report["task_b"]),
+                                     ["item", "linear", "rff"], ["", "Linear SVM", "RFF SVM"]),
+               "```"]
+        for title, rows in svm_convergence_panels(svm):
+            md += ["", f"## SVM study: {title}", "", "```",
+                   evaluate.format_table(rows, SVM_CONVERGENCE_TABLE[0], SVM_CONVERGENCE_TABLE[1],
+                                         digits=4), "```"]
+        md += ["", "## SVM study: lambda sweep (validation)", "", "```",
+               evaluate.format_table(
+                   [{**r, "lambda_": _sci(r["lambda_"], latex=False)}
+                    for r in svm["linear"]["lambda_sweep"]],
+                   ["lambda_", "val_f1", "val_auc", "train_f1", "w_norm", "margin",
+                    "support_share", "objective"]), "```",
+               "", "## SVM study: RFF gamma x lambda grid (validation)", "", "```",
+               evaluate.format_table(
+                   [{**r, "gamma": _sci(r["gamma"], latex=False),
+                     "lambda_": _sci(r["lambda_"], latex=False)} for r in svm["rff"]["grid"]],
+                   ["gamma", "lambda_", "val_f1", "val_auc", "margin", "support_share"]), "```",
+               "", "## SVM study: RFF number of features", "", "```",
+               evaluate.format_table(svm_rff_rows(svm), SVM_RFF_TABLE[0], SVM_RFF_TABLE[1]), "```"]
+    md += ["", "## Data", "", "```",
+           *[evaluate.format_table(rows, ["item", "removed", "left"], [title, "removed", "left"])
+             + "\n" for title, rows in data_rows(report) if rows], "```"]
     analysis = report["analysis"]
     errors = [(title, error_rows(analysis, key)) for key, title in ERROR_GROUPINGS]
     worst = worst_rows(analysis)
@@ -822,9 +1208,27 @@ def write_outputs(report: dict, results_dir: str, tables_dir: str) -> list[str]:
         tex["tree_study.tex"] = evaluate.latex_table(
             tree_study_rows(study), ["item", "task_a", "task_b"], ["", "Task A", "Task B"],
             more["tree_study"], label="tab:tree-study", align="lcc")
+    if svm:
+        svm_captions = _svm_captions(report["config"], svm)
+        tex["svm_study.tex"] = _latex_cells(
+            evaluate.latex_table, svm_study_rows(svm, report["task_b"], latex=True),
+            ["item", "linear", "rff"], ["", "Linear SVM", "RFF SVM"], svm_captions["study"],
+            label="tab:svm-study", align="lcc")
+        tex["svm_convergence.tex"] = _latex_cells(
+            _panel_table, svm_convergence_panels(svm, latex=True), SVM_CONVERGENCE_TABLE[0],
+            SVM_CONVERGENCE_TABLE[2], svm_captions["convergence"], label="tab:svm-convergence",
+            align="lrcccccr", wide=True)
+        tex["svm_rff.tex"] = evaluate.latex_table(
+            svm_rff_rows(svm), SVM_RFF_TABLE[0], SVM_RFF_TABLE[2], svm_captions["rff"],
+            label="tab:svm-rff", align="rcccccr"[:len(SVM_RFF_TABLE[0])])
+    tex["data.tex"] = _panel_table(data_rows(report), ["item", "removed", "left"],
+                                   ["", "Removed", "Rows / value"],
+                                   _data_caption(report["config"], report), label="tab:data",
+                                   align="lrr")
+    tex["numbers.tex"] = numbers_tex(report_numbers(report), report["config"]["fast"])
     if any(rows for _, rows in errors):
         tex["errors.tex"] = _panel_table(errors, ERROR_TABLE[0], ERROR_TABLE[2], more["errors"],
-                                         label="tab:errors", align="lrcccc", wide=True)
+                                         label="tab:errors", align="lrccccc", wide=True)
     if worst:
         tex["worst.tex"] = evaluate.latex_table(
             worst, WORST_TABLE[0], WORST_TABLE[2], more["worst"], label="tab:worst",
@@ -984,6 +1388,66 @@ def tree_study(data: dict, fig_dir: str) -> dict:
     return summary
 
 
+def svm_study(data: dict, fig_dir: str) -> dict:
+    """Tune and check our two SVMs (svm_study, Problems 3 and 4b).
+
+    The study only gets the training and validation splits; the settings it
+    returns are the ones the SVMs in the headline tables use.
+    """
+    from . import svm_study as study
+
+    X, y = data["X"], data["tier"]
+    summary = study.run(X["train"], y["train"], X["val"], y["val"], fig_dir=fig_dir)
+    # file names only: the folder differs between runs (e.g. a scratch folder for --no-figures)
+    summary["figures"] = [os.path.basename(path) for path in summary.get("figures", [])]
+    return summary
+
+
+# --- Data summary ----------------------------------------------------------------------
+# A listing is a twin of another when all of these agree (the columns the data has).
+DUPLICATE_KEY = ("category", "price", "area_m2", "land_area_sot", "rooms", "floor",
+                 "total_floors", "lat", "lng")
+
+
+def cross_split_duplicates(dfs: dict) -> dict:
+    """Validation and test listings with an identical twin in another split.
+
+    data_prep removes exact re-posts only when the description matches too, so a
+    re-post with new text and a new listing ID can land in two splits. Counted
+    here, for the report's limitations, on the columns in DUPLICATE_KEY.
+    """
+    import pandas as pd
+
+    key = [c for c in DUPLICATE_KEY if all(c in df.columns for df in dfs.values())]
+    tagged = pd.concat([df[key].assign(_split=part) for part, df in dfs.items()],
+                       ignore_index=True)
+    tagged["_train"] = tagged["_split"] == "train"
+    groups = tagged.groupby(key, dropna=False)
+    in_splits = groups["_split"].transform("nunique").to_numpy()
+    in_train = groups["_train"].transform("max").to_numpy(dtype=bool)
+    holdout = tagged["_split"].isin(["val", "test"]).to_numpy()
+    twin = holdout & (in_splits > 1)
+    n_holdout = int(holdout.sum())
+    return {"key": key, "holdout_rows": n_holdout, "with_twin": int(twin.sum()),
+            "share": float(twin.sum() / n_holdout) if n_holdout else 0.0,
+            "with_twin_in_train": int((holdout & in_train).sum())}
+
+
+def cleaning_summary(data_path: str):
+    """data_prep.clean_data's log (rows removed per step) for the dataset table.
+
+    None without the CSV (e.g. in the tests); {"status": "failed", ...} if the
+    cleaning raises, which must not throw away the results already computed.
+    """
+    if not os.path.exists(data_path):
+        return None
+    try:
+        _, log, outliers = data_prep.clean_data(data_path)
+    except Exception as exc:
+        return {"status": "failed", "reason": f"{type(exc).__name__}: {exc}"}
+    return {"steps": log.to_dict("records"), "outliers": outliers.to_dict("records")}
+
+
 def main(argv: list[str] | None = None) -> dict:
     parser = argparse.ArgumentParser(description="Reproduce every number and figure.")
     parser.add_argument("--data", default=DATA_PATH, help="path to house_sale.csv")
@@ -997,6 +1461,10 @@ def main(argv: list[str] | None = None) -> dict:
                         help="skip the tree tuning / sklearn comparison / forest study and use "
                              "the fixed TREE_REGRESSION and TREE_CLASSIFICATION settings; "
                              "writes to no_tree_study/ subfolders so the real outputs are kept")
+    parser.add_argument("--no-svm-study", action="store_true",
+                        help="skip the SVM study (lambda sweep, convergence, schedules, RFF "
+                             "tuning) and use the fixed SVM and SVM_RFF settings; writes to "
+                             "no_svm_study/ subfolders so the real outputs are kept")
     parser.add_argument("--no-figures", action="store_true", help="skip writing figures")
     parser.add_argument("--results-dir", default=None, help=f"default {RESULTS_DIR}")
     parser.add_argument("--tables-dir", default=None, help=f"default {TABLES_DIR}")
@@ -1009,9 +1477,11 @@ def main(argv: list[str] | None = None) -> dict:
     if n_boot < 1:
         parser.error("--boot must be at least 1")
     perm_repeats = 1 if args.fast else 3
-    # A smoke run, or a run without the tree study, gets its own subfolders: neither
-    # makes the report's numbers, so neither may overwrite them.
-    sub = "fast" if args.fast else ("no_tree_study" if args.no_tree_study else "")
+    # A smoke run, or a run without the tree or SVM study, gets its own subfolders:
+    # none makes the report's numbers, so none may overwrite them.
+    skipped_studies = [name for name, skip in (("no_tree_study", args.no_tree_study),
+                                               ("no_svm_study", args.no_svm_study)) if skip]
+    sub = "fast" if args.fast else "-".join(skipped_studies)
     out_dirs = {}
     for key, default in (("results", RESULTS_DIR), ("tables", TABLES_DIR),
                          ("figures", FIGURES_DIR)):
@@ -1044,13 +1514,27 @@ def main(argv: list[str] | None = None) -> dict:
         tree_b = study["task_b"]["settings"]
         per_size = study["task_a"]["target"] != "log(price)"
 
+    # 1c. SVM study: its validation-tuned settings are the ones the SVMs use below.
+    svm, svm_rff, svm_summary = SVM, SVM_RFF, None
+    if not args.no_svm_study:
+        print("SVM study (lambda sweep, convergence, schedules, RFF tuning on validation) ...",
+              flush=True)
+        if args.no_figures:
+            with tempfile.TemporaryDirectory() as scratch:
+                svm_summary = svm_study(data, scratch)
+        else:
+            svm_summary = svm_study(data, out_dirs["figures"])
+        svm = svm_summary["linear"]["settings"]
+        svm_rff = svm_summary["rff"]["settings"]
+        print(f"  chosen on validation: linear {svm}\n                        RFF {svm_rff}")
+
     # 2-4. models
     print("Task A: regression on log(price)"
           + (" (trees fitted on log(price per m2 / sot), area added back)" if per_size else ""))
     specs_a = task_a_models(tree_a, data["feature_names"], per_size)
     rows_a, outputs_a = run_task("A", specs_a, data, folds, n_boot)
     print("Task B: premium vs standard")
-    specs_b = task_b_models(tree_b)
+    specs_b = task_b_models(tree_b, svm, svm_rff)
     rows_b, outputs_b = run_task("B", specs_b, data, folds, n_boot)
 
     # 5. analysis
@@ -1067,7 +1551,9 @@ def main(argv: list[str] | None = None) -> dict:
     config = {"tree_regression": tree_a, "tree_classification": tree_b,
               "tree_task_a_target": "log(price per m2 / sot)" if per_size else "log(price)",
               "tree_settings_from": "fixed" if study is None else "tree study (validation)",
-              "svm": SVM, "folds": folds, "n_boot": n_boot, "fast": args.fast}
+              "svm": svm, "svm_rff": svm_rff,
+              "svm_settings_from": "fixed" if svm_summary is None else "SVM study (validation)",
+              "folds": folds, "n_boot": n_boot, "fast": args.fast}
     tables = {"A": result_rows(rows_a, "A"), "B": result_rows(rows_b, "B")}
     tables["headline"] = headline_rows(tables["A"], tables["B"])
     report = {
@@ -1075,7 +1561,11 @@ def main(argv: list[str] | None = None) -> dict:
         "config": config,
         "data": {**sizes, "n_features": len(data["feature_names"]),
                  "tier_threshold_azn": data["threshold"],
-                 "test_premium_share": float(np.mean(data["tier"]["test"]))},
+                 "test_premium_share": float(np.mean(data["tier"]["test"])),
+                 "premium_share": {part: float(np.mean(data["tier"][part]))
+                                   for part in ("train", "val", "test")},
+                 "cross_split_duplicates": cross_split_duplicates(data["df"]),
+                 "cleaning": cleaning_summary(args.data)},
         "task_a": rows_a,
         "task_b": rows_b,
         "tables": tables,
@@ -1083,6 +1573,7 @@ def main(argv: list[str] | None = None) -> dict:
         "scaling": scaling,
         "tree_vs_sklearn": agreement,
         "tree_study": study,
+        "svm_study": svm_summary,
         "analysis": analysis,
     }
     for task, name in (("A", "Task A: log(price)"), ("B", "Task B: premium vs standard")):

@@ -101,7 +101,8 @@ class StandInSVM:
     stopped passing the seed would no longer reproduce its numbers.
     """
 
-    def __init__(self, lambda_=1e-4, n_iters=1_000, random_state=42):
+    def __init__(self, lambda_=1e-4, n_iters=1_000, random_state=42, **settings):
+        # our SVM's other settings (n_epochs, batch_size, ...) are accepted and ignored
         self.lambda_, self.n_iters = lambda_, min(n_iters, 300)
         self.random_state = random_state
 
@@ -134,6 +135,24 @@ def _fake_load_data(path, fast=False):
     """load_data on the synthetic set; --fast subsamples it like the real 3,000-row smoke run."""
     data = fake_data()
     return run_all.subsample_train(data, 200) if fast else data
+
+
+@pytest.fixture(autouse=True)
+def small_svm_study(monkeypatch):
+    """The SVM study's grids cut down, so each run_all test stays quick, and no
+    cleaning log from a real CSV that may sit in data/ (the data here is fake)."""
+    from src import svm_study
+
+    monkeypatch.setattr(run_all, "cleaning_summary", lambda path: None)
+    monkeypatch.setattr(svm_study, "LAMBDAS", [1e-3, 1e-2])
+    monkeypatch.setattr(svm_study, "EPOCHS", [5, 10])
+    monkeypatch.setattr(svm_study, "SWEEP_EPOCHS", 10)
+    monkeypatch.setattr(svm_study, "FIRST_VERSION", {**svm_study.FIRST_VERSION, "n_iters": 500})
+    monkeypatch.setattr(svm_study, "RFF_GAMMAS", [0.03, 0.1])
+    monkeypatch.setattr(svm_study, "RFF_LAMBDAS", [1e-4, 1e-3])
+    monkeypatch.setattr(svm_study, "RFF_COMPONENTS", 64)
+    monkeypatch.setattr(svm_study, "RFF_COMPONENT_SWEEP", [16, 64])
+    monkeypatch.setattr(run_all, "SVM_RFF", {**run_all.SVM_RFF, "n_components": 64})
 
 
 def _run(tmp_path, monkeypatch, *extra):
@@ -201,7 +220,7 @@ def test_run_all_with_stand_in_models_exercises_every_step(tmp_path, monkeypatch
     assert table_b[run_all.TRIVIAL]["test_accuracy"] > 0.4
 
     headline = {r["model"]: r for r in report["tables"]["headline"]}
-    assert list(headline)[-1] == run_all.TRIVIAL and len(headline) == 6, "each model once"
+    assert list(headline)[-1] == run_all.TRIVIAL and len(headline) == 8, "each model once"
     assert headline[run_all.OUR_SVM]["task_a_rmse"] is None, "the SVM has no Task A entry"
     assert headline[run_all.OUR_TREE]["task_a_rmse"] == tree_a["test_ci"]["rmse_log"]
     assert headline[run_all.OUR_TREE]["task_b_f1"] == table_b[run_all.OUR_TREE]["test_f1"]
@@ -213,7 +232,7 @@ def test_run_all_with_stand_in_models_exercises_every_step(tmp_path, monkeypatch
     assert "## Our tree vs scikit-learn's" in md
     tex = (tmp_path / "tables" / "headline.tex").read_text(encoding="utf-8")
     assert r"\label{tab:results}" in tex and r"\begin{table}" in tex
-    assert tex.count("& n/a &") == 3, "the SVMs have no Task A result"
+    assert tex.count("& n/a &") == 5, "the SVMs have no Task A result"
     assert "Not implemented yet" not in tex, "every model ran"
     assert "Trivial baseline: the training mean (Task A)" in tex
     tex = (tmp_path / "tables" / "task_a.tex").read_text(encoding="utf-8")
@@ -227,14 +246,15 @@ def test_run_all_with_stand_in_models_exercises_every_step(tmp_path, monkeypatch
     assert "CV fit (s)" in tex and "294 rows" in tex
     study_tables = ("tree_study.tex",) if HAVE_TREE_STUDY else ()
     for name in ("headline.tex", "task_a.tex", "task_b.tex", "timing.tex", *study_tables,
-                 "errors.tex", "worst.tex"):
+                 "errors.tex", "worst.tex", "svm_study.tex", "svm_convergence.tex",
+                 "svm_rff.tex", "data.tex"):
         lines = (tmp_path / "tables" / name).read_text(encoding="utf-8").splitlines()
         spec = next(line for line in lines if r"\begin{tabular}" in line).split("}{", 1)[1]
         spec = re.sub(r"@\{(?:[^{}]|\{[^{}]*\})*\}", "", spec)  # drop @{...} spacing groups
         n_columns = sum(spec.count(c) for c in "lcr")
         header = lines[lines.index(r"    \toprule") + 1]
         assert header.count("&") + 1 == n_columns, f"{name}: column spec matches the header"
-    assert tex.count("includes evaluating its objective") == 1
+    assert tex.count("includes evaluating its objective") == 2, "our two SVMs"
     assert "Ours: SVM (Pegasos) includes evaluating its objective on every training row 3 times" \
         in tex
     figures = {p.name for p in (tmp_path / "figures").iterdir()}
@@ -264,6 +284,32 @@ def test_run_all_with_stand_in_models_exercises_every_step(tmp_path, monkeypatch
         assert saved["config"]["tree_regression"] == run_all.TREE_REGRESSION
         assert not (tmp_path / "tables" / "tree_study.tex").exists()
         assert "## Tree study" not in md
+    # The SVM study picks the SVMs' settings on validation and reaches the report.
+    svm = saved["svm_study"]
+    assert saved["config"]["svm_settings_from"] == "SVM study (validation)"
+    assert saved["config"]["svm"] == svm["linear"]["settings"]
+    assert saved["config"]["svm_rff"] == svm["rff"]["settings"]
+    assert svm["linear"]["settings"]["lambda_"] in [r["lambda_"] for r in
+                                                    svm["linear"]["lambda_sweep"]]
+    assert {"svm_lambda.png", "svm_objective.png", "svm_rff_grid.png",
+            "svm_rff_components.png"} <= figures
+    assert svm["figures"] == ["svm_lambda.png", "svm_objective.png", "svm_rff_grid.png",
+                              "svm_rff_components.png"], "file names only"
+    assert names_b[run_all.OUR_RFF]["svm"]["margin"] > 0, "margin of our RFF SVM recorded"
+    for name, label in (("svm_study.tex", "tab:svm-study"),
+                        ("svm_convergence.tex", "tab:svm-convergence"),
+                        ("svm_rff.tex", "tab:svm-rff"), ("data.tex", "tab:data")):
+        tex = (tmp_path / "tables" / name).read_text(encoding="utf-8")
+        assert rf"\label{{{label}}}" in tex, name
+        assert "TEXCELL" not in tex, "every LaTeX cell is put back"
+    tex = (tmp_path / "tables" / "svm_study.tex").read_text(encoding="utf-8")
+    assert r"\ensuremath{" in tex and r"$1/(\lambda(t+t_0))$" in tex, "math cells stay LaTeX"
+    tex = (tmp_path / "tables" / "numbers.tex").read_text(encoding="utf-8")
+    assert r"\providecommand{\defval}" in tex
+    for name in ("NTrain", "SvmLambda", "SvmBFOne", "RffBFOne", "TreeBFOne", "PctCrossSplitDup"):
+        assert rf"\defval{{{name}}}" in tex, name
+    assert r"\defval{NTrain}{294}" in tex
+    assert "## SVM study" in md and "## Data" in md
     tex = (tmp_path / "tables" / "errors.tex").read_text(encoding="utf-8")
     assert r"\textit{By property category}" in tex and r"\begin{table*}" in tex
     assert r"\textit{By training listings in the district}" in tex
@@ -349,6 +395,39 @@ def test_a_run_without_the_tree_study_keeps_the_real_outputs(tmp_path, monkeypat
     assert not (tmp_path / "results" / "results.md").exists()
     assert not (tmp_path / "report" / "tables" / "task_a.tex").exists()
     assert not (tmp_path / "report" / "tables" / "no_tree_study" / "tree_study.tex").exists()
+
+
+def test_a_run_without_the_svm_study_keeps_the_real_outputs(tmp_path, monkeypatch):
+    """--no-svm-study scores other SVMs than the report's, so it writes to its own folders."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(run_all, "load_data", lambda path, fast=False: fake_data())
+    monkeypatch.setattr(run_all, "eda_figures", lambda path, out_dir: None)
+    report = run_all.main(["--no-svm-study", "--no-figures", "--no-scaling", "--folds", "0",
+                           "--boot", "20"])
+    assert report["svm_study"] is None and report["config"]["svm_settings_from"] == "fixed"
+    assert report["config"]["svm"] == run_all.SVM
+    tables = tmp_path / "report" / "tables" / "no_svm_study"
+    assert (tables / "task_b.tex").exists() and not (tables / "svm_study.tex").exists()
+    assert not (tmp_path / "report" / "tables" / "task_b.tex").exists()
+    numbers = (tables / "numbers.tex").read_text(encoding="utf-8")
+    assert r"\defval{SvmBFOne}" in numbers and r"\defval{SvmLambda}" not in numbers
+    run_all.main(["--no-svm-study", "--no-tree-study", "--no-figures", "--no-scaling",
+                  "--folds", "0", "--boot", "20"])
+    assert (tmp_path / "results" / "no_tree_study-no_svm_study" / "results.md").exists()
+
+
+def test_cross_split_duplicates_count_validation_and_test_twins():
+    def frame(rows):
+        return pd.DataFrame(rows, columns=["category", "price", "area_m2"])
+
+    dfs = {"train": frame([("flat", 100, 50), ("flat", 200, 60)]),
+           "val": frame([("flat", 100, 50), ("house", 300, 90)]),
+           "test": frame([("house", 300, 90), ("flat", 400, 70), ("flat", 200, 61)])}
+    dup = run_all.cross_split_duplicates(dfs)
+    assert dup["key"] == ["category", "price", "area_m2"], "only the columns the data has"
+    # val (flat, 100, 50) has a twin in train; (house, 300, 90) is in val and test
+    assert (dup["holdout_rows"], dup["with_twin"], dup["with_twin_in_train"]) == (5, 3, 1)
+    assert dup["share"] == pytest.approx(3 / 5)
 
 
 def test_a_failing_eda_module_does_not_lose_the_results(tmp_path, monkeypatch):
