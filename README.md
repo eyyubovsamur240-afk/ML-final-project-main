@@ -40,13 +40,17 @@ sub-gradient method rather than a QP/SMO solver (`src/svm.py`).
 ├── data/                   # dataset lives here (not committed — see data/README.md)
 ├── src/                    # our code (tree and SVM from scratch in NumPy)
 │   ├── data_prep.py        #   loading, cleaning, split, tier label
+│   ├── eda.py              #   data-exploration figures 1-4
 │   ├── decision_tree.py    #   DecisionTree (Gini/entropy/MSE)
+│   ├── random_forest.py    #   random forest of our trees (bonus)
+│   ├── tree_experiments.py #   tree tuning, comparison with scikit-learn, forest study
 │   ├── svm.py              #   PegasosSVM (hinge-loss sub-gradient)
 │   ├── evaluate.py         #   metrics, k-fold CV, bootstrap intervals, tables
 │   ├── baselines.py        #   scikit-learn baselines with matched settings, trivial floors
 │   ├── error_analysis.py   #   error breakdowns, feature importance
 │   ├── plots.py            #   evaluation figures
 │   └── run_all.py          #   ONE command reproduces every number/figure
+├── eda.ipynb               # data exploration notebook
 ├── tests/                  # pytest suite (run by CI)
 ├── tools/                  # CI checks: golden rule, no data, submission readiness
 ├── results/                # metrics.json, results.md (generated, git-ignored)
@@ -85,7 +89,7 @@ curl -L -o data/binaaz.zip \
 unzip -o data/binaaz.zip -d data/            # -> data/house_sale.csv
 
 # 2. everything else
-python -m src.run_all            # full run (~40 min, most of it the tree study; --no-tree-study skips it)
+python -m src.run_all            # full run (~40 min, most of it the tree study)
 python -m src.run_all --fast     # smoke run: 3,000 training rows, 3 folds; writes to fast/ subfolders
 ```
 
@@ -95,8 +99,10 @@ entropy for Task B) on the validation split, compares it with scikit-learn's nod
 by node, and grows the random-forest bonus; its figures go to `report/figures/`.
 The tuned settings are the ones the trees use in every table below. For Task A both
 trees are fitted on log(price per m², or per sot for land plots) and the log area is
-added back, so they still predict log(price) and every metric is on that scale
-(`--no-tree-study` skips the study and uses the fixed settings in `run_all.py`).
+added back, so they still predict log(price) and every metric is on that scale.
+`--no-tree-study` is a quicker check: it skips the study, uses the fixed fallback
+settings in `run_all.py` on plain log(price) and writes to `no_tree_study/`
+subfolders, so it never replaces the report's tables.
 It then trains every model on the training split. For each model it reports 5-fold cross-validation on the training
 split (mean ± std), validation metrics, test metrics with 95% bootstrap intervals,
 and fit/predict times:
@@ -109,27 +115,35 @@ and fit/predict times:
 
 It also measures how often our tree's test predictions match scikit-learn's,
 fit time against training-set size, and errors broken down by price band,
-district and distance from the tier threshold. It then writes:
+property category, district and distance from the tier threshold. It then writes:
 
-- `results/metrics.json`: every number (including per-fold scores and error breakdowns)
-- `results/results.md`: the results, timing and scaling tables, and how closely our
-  tree matches scikit-learn's, as text
+- `results/metrics.json`: every number (including per-fold scores, error breakdowns
+  and the tree study's validation grid and curves)
+- `results/results.md`: the results, timing and scaling tables, how closely our tree
+  matches scikit-learn's, the tree study and the error analysis, as text
 - `report/tables/headline.tex` (every model on both tasks), `task_a.tex`, `task_b.tex`,
-  `timing.tex`: tables for the report (`\input{tables/headline.tex}`)
+  `timing.tex`, `tree_study.tex` (tuned settings, ours vs scikit-learn, random forest),
+  `errors.tex` (errors by category and district coverage), `worst.tex` (the listings
+  our tree misprices most): tables for the report (`\input{tables/headline.tex}`)
 - `report/figures/eval_*.pdf`: predicted vs actual, error by price band and by district
   coverage, confusion matrices, ROC curves, error vs distance from the tier threshold,
   permutation importance, tree impurity importance, SVM weights, fit time vs
   training-set size
-- `report/figures/fig1-4`: the data-exploration figures, once `src/eda.py` is merged
+- `report/figures/tree_*.png`, `forest_*.png`: the tree study's validation grids and
+  curves and the forest's score as trees are added (`src/tree_experiments.py`)
+- `report/figures/fig1_*.png` to `fig4_*.png`: the data-exploration figures (`src/eda.py`)
 
 These outputs are git-ignored: they are regenerated, never edited by hand. Once the
-numbers are final, commit the report's tables and figures explicitly
-(`git add -f report/tables/*.tex report/figures/<name>.pdf`, see CONTRIBUTING.md) so
+numbers are final, commit the files the report uses explicitly
+(`git add -f report/tables/*.tex report/figures/<name>.pdf report/figures/<name>.png`,
+see CONTRIBUTING.md; `python tools/check_submission.py` lists any that are missing) so
 the report builds in CI. A model whose `fit` or `predict` is still a `TODO` stub is
 listed as "not implemented yet" and skipped; if only `predict_proba` /
-`decision_function` is a stub, the model is scored without an AUC (n/a in the tables). The final hyperparameters live at the top of
-`src/run_all.py` (`TREE_REGRESSION`, `TREE_CLASSIFICATION`, `SVM`) and are chosen on
-the validation split only.
+`decision_function` is a stub, the model is scored without an AUC (n/a in the tables).
+The trees' final settings come from the tree study (printed, and saved in
+`metrics.json` under `tree_study`); `TREE_REGRESSION` and `TREE_CLASSIFICATION` at the
+top of `src/run_all.py` are only the `--no-tree-study` fallback. The SVM's `lambda_`
+and `n_iters` are fixed in `SVM` there and are not tuned by any script yet.
 
 ## Team workflow
 How we branch, review, test and submit: **[CONTRIBUTING.md](CONTRIBUTING.md)**.

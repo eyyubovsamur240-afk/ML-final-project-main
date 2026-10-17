@@ -16,6 +16,7 @@ report/figures/*.pdf
 report/figures/*.png
 !report/figures/.gitkeep
 report/figures/fast/
+report/figures/no_tree_study/
 *.log
 *.aux
 *.out

@@ -11,7 +11,8 @@ What it does:
   1b. the tree study (src/tree_experiments.py, Problems 4a, 5a, 9): tunes our
      tree on the validation split, compares it with scikit-learn's node by
      node and grows the random forest bonus; the tuned settings are the ones
-     the trees use below (--no-tree-study keeps TREE_REGRESSION / _CLASSIFICATION)
+     the trees use below (--no-tree-study keeps TREE_REGRESSION / _CLASSIFICATION
+     and writes to no_tree_study/ subfolders, so the report's outputs are kept)
   2. Task A, log(price): our decision tree vs DecisionTreeRegressor vs the train mean
   3. Task B, price tier: our decision tree and our Pegasos SVM vs scikit-learn's
      DecisionTreeClassifier, SGDClassifier (hinge) and LinearSVC, and the majority class
@@ -20,7 +21,8 @@ What it does:
      and how closely our tree reproduces scikit-learn's (Problem 5)
   5. error analysis, feature importance, fit-time scaling, figures (Problem 6),
      plus the data-exploration figures from src/eda.py when it exists
-  6. writes results/metrics.json, results/results.md, report/tables/*.tex and
+  6. writes results/metrics.json, results/results.md, report/tables/*.tex
+     (results, timing, tree study and forest, error analysis) and
      report/figures/eval_*.pdf, and prints the comparison tables
      (--fast writes to results/fast/, report/tables/fast/, report/figures/fast/)
 
@@ -56,10 +58,12 @@ TABLES_DIR = os.path.join("report", "tables")
 FIGURES_DIR = plots.FIGURES_DIR
 
 # --- Final hyperparameters (Problem 4c) ----------------------------------------
-# The tree and SVM owners set these from the VALIDATION results only (never the
-# test set). The scikit-learn baselines reuse the same values, which is what
-# makes the comparison in Problem 5 a matched one. The tree settings are only a
-# fallback: a normal run takes them from the tree study (tree_experiments.run).
+# A normal run takes the tree settings from the tree study, which tunes them on
+# the VALIDATION split (tree_experiments.run); TREE_REGRESSION and
+# TREE_CLASSIFICATION are only the --no-tree-study fallback. SVM is fixed: no
+# code tunes lambda_ or n_iters yet (Problem 4b). The scikit-learn baselines
+# reuse the same values, which is what makes the comparison in Problem 5 a
+# matched one.
 TREE_REGRESSION = {"criterion": "mse", "max_depth": 12, "min_samples_split": 2,
                    "min_samples_leaf": 5, "min_impurity_decrease": 0.0}
 TREE_CLASSIFICATION = {"criterion": "gini", "max_depth": 10, "min_samples_split": 2,
@@ -289,7 +293,9 @@ def analyse(data: dict, outputs_a: dict, outputs_b: dict, perm_repeats: int) -> 
             "by_category": error_analysis.regression_breakdown(test["category"], log_true, o["pred"]),
             "by_district_coverage": error_analysis.regression_breakdown(coverage, log_true,
                                                                         o["pred"]),
-            "worst": error_analysis.worst_predictions(test, log_true, o["pred"]),
+            "worst": error_analysis.worst_predictions(
+                test, log_true, o["pred"],
+                columns=("category", "location", "area_m2", "land_area_sot", "rooms")),
         }
     for name, o in outputs_b.items():
         if name == TRIVIAL:
@@ -482,6 +488,117 @@ def timing_rows(rows_a: list[dict], rows_b: list[dict]) -> list[dict]:
     return out
 
 
+def tree_study_rows(study: dict) -> list[dict]:
+    """The tree study as a table: one row per setting or score, one column per task."""
+    a, b = study["task_a"], study["task_b"]
+
+    def depth(s):
+        return "unlimited" if s["settings"]["max_depth"] is None else s["settings"]["max_depth"]
+
+    def size(s, who):
+        return f"{s[who]['depth']:,} / {s[who]['n_leaves']:,}"
+
+    def same_tree(s):
+        if s["same_structure"]:
+            return "yes"
+        if s.get("sklearn_seed_matching_ours") is not None:
+            return "ties only"
+        return "same leaves" if s["same_leaf_groups"] else "no"
+
+    items = [
+        ("Target", a.get("target", "log(price)"), "price tier"),
+        ("Score", study["metric"]["task_a"], study["metric"]["task_b"]),
+        ("Criterion", a["settings"]["criterion"], b["settings"]["criterion"]),
+        ("max_depth", depth(a), depth(b)),
+        ("min_samples_leaf", a["settings"]["min_samples_leaf"], b["settings"]["min_samples_leaf"]),
+        ("Validation, our tree", a["validation"], b["validation"]),
+        ("Test, our tree", a["test_ours"], b["test_ours"]),
+        ("Test, scikit-learn's tree", a["test_sklearn"], b["test_sklearn"]),
+        ("Depth / leaves, ours", size(a, "size_ours"), size(b, "size_ours")),
+        ("Depth / leaves, scikit-learn", size(a, "size_sklearn"), size(b, "size_sklearn")),
+        ("Same test predictions (share)", a["prediction_agreement"], b["prediction_agreement"]),
+        ("Same tree, node by node", same_tree(a), same_tree(b)),
+        ("Test, our forest", a["forest_test"], b["forest_test"]),
+        ("Test, scikit-learn's forest", a["sklearn_forest_test"], b["sklearn_forest_test"]),
+    ]
+    return [{"item": item, "task_a": value_a, "task_b": value_b} for item, value_a, value_b in items]
+
+
+def _records(table) -> list[dict]:
+    """An error-analysis table (a DataFrame, or its records once loaded from JSON) as dicts."""
+    if table is None:
+        return []
+    return table.to_dict("records") if hasattr(table, "to_dict") else list(table)
+
+
+# Error-analysis groupings shown in the report, and the columns each of our models fills.
+ERROR_GROUPINGS = (("by_category", "By property category"),
+                   ("by_district_coverage", "By training listings in the district"))
+ERROR_COLUMNS = {("task_a", OUR_TREE): {"median_ape": "a_ape", "bias_log": "a_bias"},
+                 ("task_b", OUR_TREE): {"error_rate": "b_tree"},
+                 ("task_b", OUR_SVM): {"error_rate": "b_svm"}}
+
+
+def error_rows(analysis: dict, grouping: str) -> list[dict]:
+    """Test errors per group: Task A median APE and bias of our tree, Task B error rate of
+    our tree and our SVM (missing = n/a, e.g. for a model that is not implemented yet)."""
+    rows: dict[str, dict] = {}
+    for (task, model), columns in ERROR_COLUMNS.items():
+        for rec in _records(analysis[task].get(model, {}).get(grouping)):
+            row = rows.setdefault(rec["group"], {"group": rec["group"], "n": rec["n"]})
+            row.update({new: rec[old] for old, new in columns.items()})
+    return list(rows.values())
+
+
+def worst_rows(analysis: dict, n: int = 8) -> list[dict]:
+    """The test listings with the largest |log error| of our tree on Task A (as ranked by
+    error_analysis.worst_predictions; area 0 = not recorded)."""
+    def recorded(value):
+        return value is not None and np.isfinite(value) and value > 0
+
+    def floor_area(value):
+        return int(round(value)) if recorded(value) else None
+
+    def land(value):  # plots of a fraction of a sot are common, so keep one decimal
+        return f"{round(float(value), 1):g}" if recorded(value) else None
+
+    return [{"category": rec.get("category"), "location": rec.get("location"),
+             "area_m2": floor_area(rec.get("area_m2")),
+             "land_area_sot": land(rec.get("land_area_sot")),
+             "price": int(rec["price"]), "predicted": int(rec["predicted"]),
+             "error": f"{rec['error_pct']:+.0f}%"}
+            for rec in _records(analysis["task_a"].get(OUR_TREE, {}).get("worst"))[:n]]
+
+
+ERROR_TABLE = (["group", "n", "a_ape", "a_bias", "b_tree", "b_svm"],
+               ["Group", "n", "A: median APE, our tree", "A: bias (log), our tree",
+                "B: error rate, our tree", "B: error rate, our SVM"],
+               ["Group", "$n$", "A: median APE", "A: bias", "B: error, tree", "B: error, SVM"])
+WORST_TABLE = (["category", "location", "area_m2", "land_area_sot", "price", "predicted", "error"],
+               ["Category", "Location", "Area (m2)", "Land (sot)", "Price (AZN)", "Predicted (AZN)",
+                "Error"],
+               ["Category", "Location", "Area (m$^2$)", "Land (sot)", "Price", "Predicted",
+                "Error"])
+
+
+def _panel_table(panels: list[tuple[str, list[dict]]], columns: list[str], headers: list[str],
+                 caption: str, label: str, align: str, wide: bool = False) -> str:
+    """evaluate.latex_table with its rows in titled panels (e.g. by category, then by district)."""
+    rows = [row for _, panel in panels for row in panel]
+    lines = evaluate.latex_table(rows, columns, headers, caption, label, align=align,
+                                 wide=wide).splitlines()
+    first, last = lines.index(r"    \midrule") + 1, lines.index(r"    \bottomrule")
+    out, body, start = lines[:first - 1], lines[first:last], 0
+    for title, panel in panels:
+        if not panel:
+            continue
+        out += [r"    \midrule",
+                rf"    \multicolumn{{{len(columns)}}}{{@{{}}l}}{{\textit{{{title}}}}} \\",
+                *body[start:start + len(panel)]]
+        start += len(panel)
+    return "\n".join(out + lines[last:]) + "\n"
+
+
 def _jsonable(obj):
     """numpy / pandas values -> plain JSON types (used as json.dump's default)."""
     if hasattr(obj, "to_dict") and hasattr(obj, "columns"):
@@ -566,6 +683,60 @@ def _captions(config: dict, skipped: dict | None = None, n_train: int | None = N
     }
 
 
+def _max_features(value) -> str:
+    """A forest's max_features as a share of the d feature columns, for a caption."""
+    if value == "sqrt":
+        return r"$\sqrt{d}$"
+    if isinstance(value, float):
+        return f"${value:.2g}\\,d$"
+    return str(value)
+
+
+def _analysis_captions(config: dict, study: dict | None, n_worst: int) -> dict:
+    """Captions of the tree-study, error-analysis and worst-listings tables."""
+    prefix = "SMOKE RUN (training split subsampled to 3,000 rows). " if config["fast"] else ""
+    out = {
+        "errors": f"{prefix}Where our models fail on the test split. Per group: the number of "
+                  "test listings, Task~A median $|$predicted $-$ actual$|$ / actual price and "
+                  "mean error of $\\log(\\text{price})$ (bias; $>0$ = over-priced) of our tree, "
+                  "and the Task~B error rate of our tree and our SVM. District coverage counts "
+                  "the training listings in the listing's district. n/a = no result for that "
+                  "model.",
+        "worst": f"{prefix}The {n_worst} test listings our tree misprices most on Task~A, "
+                 "ranked by $|\\log(\\text{predicted} / \\text{actual})|$, which counts "
+                 "over- and under-pricing by the same factor alike, with the predicted price "
+                 "in AZN and error = predicted / actual $-$ 1. n/a = not recorded (land plots "
+                 "have a land area in sot instead of a floor area, flats have no separate "
+                 "land).",
+    }
+    if study:
+        def grid(values):
+            return ", ".join("unlimited" if v is None else str(v) for v in values)
+
+        forest_a, forest_b = study["task_a"]["forest"], study["task_b"]["forest"]
+        trees = (str(forest_b["n_estimators"]) if forest_a["n_estimators"] == forest_b["n_estimators"]
+                 else f"{forest_b['n_estimators']} (Task~B) or {forest_a['n_estimators']} (Task~A)")
+        per_size = ("; for Task~A both trees are fitted on log(price per m$^2$, or per sot for "
+                    "land) and the log area is added back, so the scores are on log(price)"
+                    if study["task_a"].get("target", "log(price)") != "log(price)" else "")
+        out["tree_study"] = (
+            f"{prefix}Tree study (\\texttt{{src/tree\\_experiments.py}}). Our tree's max\\_depth "
+            f"$\\in$ \\{{{grid(tree_experiments.GRID_DEPTHS)}\\}} and min\\_samples\\_leaf $\\in$ "
+            f"\\{{{grid(tree_experiments.GRID_LEAF)}\\}} are tuned together on the validation "
+            "split (for Task~B with both Gini and entropy; on a tie the simpler tree wins), then "
+            "scored once on the test split. scikit-learn's tree gets the same settings and rows"
+            f"{per_size}. Ties only: scikit-learn builds exactly our tree with another "
+            "random\\_state, so only the order in which equally good splits are tried differs; "
+            "same leaves: the trees differ but every leaf holds the same training rows. Forest "
+            f"(Problem~9): {trees} of our trees, each on a bootstrap sample of the training rows, "
+            f"trying {_max_features(forest_b['max_features'])} (Task~B) or "
+            f"{_max_features(forest_a['max_features'])} (Task~A) of the $d$ feature columns at "
+            f"each split, with leaves of at least {forest_b['min_samples_leaf']} (Task~B) or "
+            f"{forest_a['min_samples_leaf']} (Task~A) rows, against scikit-learn's RandomForest "
+            "with the same settings.")
+    return out
+
+
 def write_outputs(report: dict, results_dir: str, tables_dir: str) -> list[str]:
     os.makedirs(results_dir, exist_ok=True)
     os.makedirs(tables_dir, exist_ok=True)
@@ -605,16 +776,19 @@ def write_outputs(report: dict, results_dir: str, tables_dir: str) -> list[str]:
                                       "leaves_sklearn"]), "```"]
     study = report.get("tree_study")
     if study:
-        rows = [{"task": key, "target": study[key].get("target", "price tier"),
-                 "metric": study["metric"][key], "ours": study[key]["test_ours"],
-                 "sklearn": study[key]["test_sklearn"],
-                 "our_forest": study[key]["forest_test"],
-                 "sklearn_forest": study[key]["sklearn_forest_test"],
-                 **{k: study[key]["settings"][k] for k in ("criterion", "max_depth",
-                                                           "min_samples_leaf")}}
-                for key in ("task_a", "task_b")]
-        md += ["", "## Tree study: settings tuned on validation, test scores", "", "```",
-               evaluate.format_table(rows, list(rows[0])), "```"]
+        md += ["", "## Tree study: settings tuned on validation, test scores, random forest", "",
+               "```", evaluate.format_table(tree_study_rows(study), ["item", "task_a", "task_b"],
+                                            ["", "Task A", "Task B"]), "```"]
+    analysis = report["analysis"]
+    errors = [(title, error_rows(analysis, key)) for key, title in ERROR_GROUPINGS]
+    worst = worst_rows(analysis)
+    for title, rows in errors:
+        if rows:
+            md += ["", f"## Test errors of our models, {title.lower()}", "", "```",
+                   evaluate.format_table(rows, ERROR_TABLE[0], ERROR_TABLE[1]), "```"]
+    if worst:
+        md += ["", "## Task A: largest test errors of our tree", "", "```",
+               evaluate.format_table(worst, WORST_TABLE[0], WORST_TABLE[1]), "```"]
     path = os.path.join(results_dir, "results.md")
     with open(path, "w", encoding="utf-8") as f:
         f.write("\n".join(md) + "\n")
@@ -640,6 +814,18 @@ def write_outputs(report: dict, results_dir: str, tables_dir: str) -> list[str]:
             report["timing"], timing_columns, timing_headers, captions["timing"],
             label="tab:timing", align="ll" + "r" * (len(timing_columns) - 2)),
     }
+    more = _analysis_captions(report["config"], study, len(worst))
+    if study:
+        tex["tree_study.tex"] = evaluate.latex_table(
+            tree_study_rows(study), ["item", "task_a", "task_b"], ["", "Task A", "Task B"],
+            more["tree_study"], label="tab:tree-study", align="lcc")
+    if any(rows for _, rows in errors):
+        tex["errors.tex"] = _panel_table(errors, ERROR_TABLE[0], ERROR_TABLE[2], more["errors"],
+                                         label="tab:errors", align="lrcccc", wide=True)
+    if worst:
+        tex["worst.tex"] = evaluate.latex_table(
+            worst, WORST_TABLE[0], WORST_TABLE[2], more["worst"], label="tab:worst",
+            align="llrrrrr", wide=True)
     for name, text in tex.items():
         path = os.path.join(tables_dir, name)
         with open(path, "w", encoding="utf-8") as f:
@@ -739,11 +925,19 @@ TREE_SETTINGS = ("criterion", "max_depth", "min_samples_split", "min_samples_lea
                  "min_impurity_decrease")
 
 
+def _curve(curve: dict) -> dict:
+    """A tree_experiments validation curve without its fit times, which differ between runs."""
+    return {key: curve[key] for key in ("param", "values", "train", "val", "n_leaves")
+            if key in curve}
+
+
 def tree_study(data: dict, fig_dir: str) -> dict:
     """Tune, benchmark and ensemble our tree (tree_experiments, Problems 4a, 5a, 9).
 
     Tuning only looks at the validation split; the tuned settings are returned
-    for the trees in the headline tables, so both report the same tree.
+    for the trees in the headline tables, so both report the same tree. The
+    summary also keeps the evidence behind them (the validation grid and curves,
+    the comparison with scikit-learn, the forest's curves) for metrics.json.
     """
     X, parts = data["X"], ("train", "val", "test")
     task_a = tuple(a for p in parts for a in (X[p], data["log_price"][p]))
@@ -753,17 +947,34 @@ def tree_study(data: dict, fig_dir: str) -> dict:
     forest = tree_experiments.run_forest(task_a, task_b, names, trees, fig_dir=fig_dir)
     summary = {}
     for key in ("task_a", "task_b"):
-        params, cmp = trees[key]["params"], trees[key]["comparison"]
+        params, cmp, grid = trees[key]["params"], trees[key]["comparison"], trees[key]["grid"]
+        ours, sk = cmp["ours"], cmp["sklearn"]
         summary[key] = {
             "settings": {k: params.get(k, d) for k, d in zip(
                 TREE_SETTINGS, ("mse", None, 2, 1, 0.0), strict=True)},
-            "test_ours": cmp["ours"]["score"], "test_sklearn": cmp["sklearn"]["score"],
+            "validation": grid[(params["max_depth"], params["min_samples_leaf"])],
+            "grid": [{"max_depth": depth, "min_samples_leaf": leaf, "validation": score}
+                     for (depth, leaf), score in grid.items()],
+            "test_ours": ours["score"], "test_sklearn": sk["score"],
+            "size_ours": {"depth": ours["depth"], "n_leaves": ours["n_leaves"]},
+            "size_sklearn": {"depth": sk["depth"], "n_leaves": sk["n_leaves"]},
+            "prediction_agreement": cmp["pred_agreement"],
             "same_structure": bool(cmp["same_structure"]),
             "same_leaf_groups": bool(cmp["same_leaf_groups"]),
+            "sklearn_seed_matching_ours": cmp["sklearn_seed_matching_ours"],
+            "ours_fit_seconds": ours["fit_time"], "sklearn_fit_seconds": sk["fit_time"],
+            "forest": dict(forest[key]["params"]),
             "forest_test": forest[key]["test_score"],
             "sklearn_forest_test": forest[key]["sklearn_score"],
+            "forest_val_curve": forest[key]["val_curve"],
+            "forest_test_curve": forest[key]["test_curve"],
+            "forest_fit_seconds": forest[key]["fit_time"],
+            "sklearn_forest_fit_seconds": forest[key]["sklearn_fit_time"],
         }
     summary["task_a"]["target"] = trees["task_a"]["target"]
+    summary["task_a"]["depth_curve"] = _curve(trees["task_a"]["depth_curve"])
+    summary["task_b"]["criterion_curves"] = {
+        criterion: _curve(curve) for criterion, curve in trees["task_b"]["criterion_curves"].items()}
     summary["metric"] = {"task_a": "RMSE of log(price)", "task_b": "F1 (premium)"}
     return summary
 
@@ -779,7 +990,8 @@ def main(argv: list[str] | None = None) -> dict:
     parser.add_argument("--no-scaling", action="store_true", help="skip the fit-time scaling study")
     parser.add_argument("--no-tree-study", action="store_true",
                         help="skip the tree tuning / sklearn comparison / forest study and use "
-                             "the fixed TREE_REGRESSION and TREE_CLASSIFICATION settings")
+                             "the fixed TREE_REGRESSION and TREE_CLASSIFICATION settings; "
+                             "writes to no_tree_study/ subfolders so the real outputs are kept")
     parser.add_argument("--no-figures", action="store_true", help="skip writing figures")
     parser.add_argument("--results-dir", default=None, help=f"default {RESULTS_DIR}")
     parser.add_argument("--tables-dir", default=None, help=f"default {TABLES_DIR}")
@@ -792,11 +1004,14 @@ def main(argv: list[str] | None = None) -> dict:
     if n_boot < 1:
         parser.error("--boot must be at least 1")
     perm_repeats = 1 if args.fast else 3
+    # A smoke run, or a run without the tree study, gets its own subfolders: neither
+    # makes the report's numbers, so neither may overwrite them.
+    sub = "fast" if args.fast else ("no_tree_study" if args.no_tree_study else "")
     out_dirs = {}
     for key, default in (("results", RESULTS_DIR), ("tables", TABLES_DIR),
                          ("figures", FIGURES_DIR)):
         given = getattr(args, f"{key}_dir")
-        out_dirs[key] = given or (os.path.join(default, "fast") if args.fast else default)
+        out_dirs[key] = given or (os.path.join(default, sub) if sub else default)
 
     # 1. data
     data = load_data(args.data, fast=args.fast)

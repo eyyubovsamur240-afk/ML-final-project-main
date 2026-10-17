@@ -218,7 +218,8 @@ def test_run_all_with_stand_in_models_exercises_every_step(tmp_path, monkeypatch
     assert svm_row.count("[") == 2, "test F1 and test AUC both have an interval"
     tex = (tmp_path / "tables" / "timing.tex").read_text(encoding="utf-8")
     assert "CV fit (s)" in tex and "294 rows" in tex
-    for name in ("headline.tex", "task_a.tex", "task_b.tex", "timing.tex"):
+    for name in ("headline.tex", "task_a.tex", "task_b.tex", "timing.tex", "tree_study.tex",
+                 "errors.tex", "worst.tex"):
         lines = (tmp_path / "tables" / name).read_text(encoding="utf-8").splitlines()
         spec = next(line for line in lines if r"\begin{tabular}" in line).split("}{", 1)[1]
         spec = re.sub(r"@\{(?:[^{}]|\{[^{}]*\})*\}", "", spec)  # drop @{...} spacing groups
@@ -232,6 +233,31 @@ def test_run_all_with_stand_in_models_exercises_every_step(tmp_path, monkeypatch
     assert {"eval_pred_vs_actual.pdf", "eval_confusion_matrices.pdf", "eval_roc_curves.pdf",
             "eval_svm_weights.pdf", "eval_fit_time_scaling.pdf",
             "eval_tree_impurity_importance.pdf"} <= figures
+    assert {"tree_a_grid.png", "tree_a_depth.png", "tree_b_depth_gini_entropy.png",
+            "forest_a_n_trees.png", "forest_b_n_trees.png"} <= figures, "the report uses these"
+
+    # The tree study, the forest and the error analysis reach the report as tables.
+    study = saved["tree_study"]
+    for key in ("task_a", "task_b"):
+        chosen = [g["validation"] for g in study[key]["grid"]
+                  if (g["max_depth"], g["min_samples_leaf"]) == (
+                      study[key]["settings"]["max_depth"], study[key]["settings"]["min_samples_leaf"])]
+        assert chosen == [study[key]["validation"]], "the validation grid is saved"
+        assert len(study[key]["forest_test_curve"]) == study[key]["forest"]["n_estimators"]
+    assert set(study["task_b"]["criterion_curves"]) == {"gini", "entropy"}
+    tex = (tmp_path / "tables" / "tree_study.tex").read_text(encoding="utf-8")
+    assert r"\label{tab:tree-study}" in tex and "Test, our forest" in tex
+    assert "max\\_depth" in tex and "tuned together on the validation split" in tex
+    tex = (tmp_path / "tables" / "errors.tex").read_text(encoding="utf-8")
+    assert r"\textit{By property category}" in tex and r"\begin{table*}" in tex
+    assert r"\textit{By training listings in the district}" in tex
+    for category in set(report["analysis"]["task_a"][run_all.OUR_TREE]["by_category"]["group"]):
+        assert run_all.evaluate.latex_escape(category) in tex
+    tex = (tmp_path / "tables" / "worst.tex").read_text(encoding="utf-8")
+    assert r"\label{tab:worst}" in tex and tex.count(r"\%") == 8, "eight listings, error in %"
+    for heading in ("## Tree study", "## Test errors of our models, by property category",
+                    "## Task A: largest test errors of our tree"):
+        assert heading in md
 
 
 def _without_timings(obj):
@@ -292,6 +318,21 @@ def test_fast_run_keeps_the_real_outputs(tmp_path, monkeypatch):
     assert not (tmp_path / "results" / "results.md").exists()
     assert "SMOKE RUN" in (tmp_path / "report" / "tables" / "fast" / "task_a.tex").read_text(
         encoding="utf-8")
+
+
+def test_a_run_without_the_tree_study_keeps_the_real_outputs(tmp_path, monkeypatch):
+    """--no-tree-study scores other trees than the report's, so it writes to its own folders."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(run_all, "load_data", lambda path, fast=False: fake_data())
+    monkeypatch.setattr(run_all, "eda_figures", lambda path, out_dir: None)
+    report = run_all.main(["--no-tree-study", "--no-figures", "--no-scaling", "--folds", "0",
+                           "--boot", "20"])
+    assert report["tree_study"] is None and report["config"]["tree_settings_from"] == "fixed"
+    assert (tmp_path / "results" / "no_tree_study" / "results.md").exists()
+    assert (tmp_path / "report" / "tables" / "no_tree_study" / "task_a.tex").exists()
+    assert not (tmp_path / "results" / "results.md").exists()
+    assert not (tmp_path / "report" / "tables" / "task_a.tex").exists()
+    assert not (tmp_path / "report" / "tables" / "no_tree_study" / "tree_study.tex").exists()
 
 
 def test_a_failing_eda_module_does_not_lose_the_results(tmp_path, monkeypatch):
@@ -393,3 +434,15 @@ def test_per_size_target_predicts_log_price():
     r2 = run_all.evaluate.r2
     assert r2(y["test"], model.predict(X["test"])) > r2(y["test"] - log_area, inner)
     assert model.get_depth() == 3 and model.feature_importances_.shape == (len(names),)
+
+
+def test_worst_rows_keep_fractional_land_and_mark_missing_areas():
+    worst = pd.DataFrame({"category": ["Torpaq", "Yeni tikili"],
+                          "location": ["Nərimanov r.", "Sahil m."],
+                          "area_m2": [0.0, 75.4], "land_area_sot": [0.4, 0.0],
+                          "price": [23_000.0, 75_900.0], "predicted": [50_176.0, 146_246.0],
+                          "error_pct": [118.2, 92.7]})
+    rows = run_all.worst_rows({"task_a": {run_all.OUR_TREE: {"worst": worst}}})
+    assert rows[0]["land_area_sot"] == "0.4" and rows[0]["area_m2"] is None
+    assert rows[1]["area_m2"] == 75 and rows[1]["land_area_sot"] is None
+    assert [r["error"] for r in rows] == ["+118%", "+93%"]

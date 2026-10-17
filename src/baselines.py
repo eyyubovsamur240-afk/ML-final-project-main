@@ -22,8 +22,9 @@ Matching notes (worth a sentence in the report):
     about 11% more on the full training split, under 1% more on a 3,000-row subsample.
   * LinearSVC minimises 1/2 ||w||^2 + C sum hinge, the same problem when
     C = 1/(lambda*n), with n the number of FIT rows. On the full training split it
-    stops at max_iter with a ConvergenceWarning (recorded by run_all), but its test
-    accuracy is unchanged at 5x and 15x more iterations (0.8916 vs 0.8915).
+    stops at max_iter with a ConvergenceWarning (recorded by run_all). max_iter is a
+    time cap, not a tuned setting, and the report says LinearSVC is not run to the
+    exact optimum.
   * scikit-learn weights min_impurity_decrease by the node's share of the
     training rows (N_t/N); if our tree uses the unweighted gain, the same number
     prunes differently. Leave it at 0.0 for a like-for-like comparison.
