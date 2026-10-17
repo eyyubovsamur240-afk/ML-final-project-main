@@ -4,10 +4,11 @@
 %
 %  This template MIMICS the IEEE two-column conference look using only
 %  standard LaTeX packages. It does NOT depend on IEEEtran.cls, so it
-%  compiles anywhere (tectonic, pdflatex, Overleaf) with nothing extra.
+%  compiles with pdflatex (also Overleaf's default) with nothing extra.
 %
-%  Build:   tectonic report.tex      (recommended)
-%     or:   pdflatex report.tex ; pdflatex report.tex
+%  Build:   pdflatex report.tex ; pdflatex report.tex      (as CI does)
+%  XeTeX/LuaTeX engines (tectonic, xelatex, lualatex) would drop the
+%  Azerbaijani letters in the generated tables, so the build stops there.
 % =====================================================================
 \documentclass[10pt,twocolumn,a4paper]{article}
 
@@ -43,6 +44,27 @@
 
 \captionsetup{font=small,labelsep=period}
 \setlength{\parindent}{1em}
+
+% ---- Azerbaijani names in the generated tables (districts, categories):
+% with pdflatex the T1 font has every letter but the schwa, so draw it as a
+% turned e. XeTeX/LuaTeX would silently drop several letters with this font.
+\ifdefined\DeclareUnicodeCharacter
+  \DeclareUnicodeCharacter{0259}{\rotatebox[origin=c]{180}{e}}
+  \DeclareUnicodeCharacter{018F}{\scalebox{1.3}{\rotatebox[origin=c]{180}{e}}}
+\else
+  \errmessage{Build report.tex with pdflatex, as CI does: this engine would
+    drop the Azerbaijani letters in the generated tables}
+\fi
+
+% ---- Tables and figures written by `python -m src.run_all` -----------
+% (report/tables/, report/figures/). Until they are generated, a box
+% names the missing file instead of breaking the build.
+\newcommand{\missinggenerated}[1]{\fbox{\parbox{0.95\linewidth}{\small
+  Missing \nolinkurl{report/#1}: run \texttt{python -m src.run\_all}.}}}
+\newcommand{\generatedtable}[1]{\IfFileExists{#1}{\input{#1}}{%
+  \par\noindent\missinggenerated{#1}\par}}
+\newcommand{\generatedfigure}[2]{\IfFileExists{#1}{%
+  \includegraphics[width=#2]{#1}}{\missinggenerated{#1}}}
 
 % =====================================================================
 \begin{document}
@@ -114,6 +136,43 @@ leakage columns you removed and why.}
   \end{tabular}
 \end{table}
 
+% Figures 1-4 come from src/eda.py (run by run_all); their image titles carry
+% the same numbers, so they stay the first four figures in the source.
+\begin{figure*}[t]
+  \centering
+  \generatedfigure{figures/fig1_price_distribution.png}{0.8\textwidth}
+  \caption{Sale price of the cleaned listings: (a) in thousand AZN, with the
+    axis cut at the 99th percentile, and (b) $\log(\text{price})$, the scale
+    the Task~A models are trained on.}
+  \label{fig:price}
+\end{figure*}
+
+\begin{figure*}[t]
+  \centering
+  \generatedfigure{figures/fig2_area_rooms_vs_price.png}{0.8\textwidth}
+  \caption{(a) Floor area against price (log--log) and (b) price by number
+    of rooms, with Spearman correlations; land plots are left out because
+    they have no floor area.}
+  \label{fig:size-price}
+\end{figure*}
+
+\begin{figure*}[t]
+  \centering
+  \generatedfigure{figures/fig3_location_effects.png}{0.8\textwidth}
+  \caption{Location and price: (a) every listing coloured by
+    $\log(\text{price})$, (b) the median $\log(\text{price})$ per map cell in
+    the Baku area.}
+  \label{fig:location}
+\end{figure*}
+
+\begin{figure}[t]
+  \centering
+  \generatedfigure{figures/fig4_class_balance.png}{\linewidth}
+  \caption{Share of standard and premium listings in the training,
+    validation and test splits; the threshold is the training median price.}
+  \label{fig:balance}
+\end{figure}
+
 \section{Method}
 \subsection{Decision tree (from scratch)}
 Describe your impurity criteria (Gini / entropy / MSE reduction), the
@@ -129,37 +188,220 @@ Explain the learning-rate schedule, feature scaling, and your non-linear
 extension (kernelised Pegasos or random Fourier features), if any.
 
 \section{Experimental Setup}
-Metrics (RMSE/MAE/$R^2$ for regression; precision/recall/F1/AUC for
-classification), hyperparameter search protocol, seeds, and the
-scikit-learn baselines you compared against (with matched settings).
+\textbf{Protocol.} Every model sees the same 70/15/15 training, validation
+and test split (seed 42). The trees' settings are chosen on the validation
+split only (Table~\ref{tab:tree-study}); the SVM uses $\lambda=10^{-4}$ and
+200{,}000 Pegasos updates, and its scikit-learn twins the same $\lambda$. The
+Task~B threshold is the training median price, and the test split is scored
+once, with the final settings. Each model is also cross-validated
+on the training split (5 folds, stratified by tier for Task~B; mean $\pm$
+std), and each headline test metric has a 95\% percentile bootstrap interval
+(1{,}000 resamples of the test rows).
+
+\textbf{Metrics.} Task~A: RMSE, MAE and $R^2$ on $\log(\text{price})$, the
+scale the models are trained on, and the median absolute percentage error of
+the price in AZN, which is easier to read. Task~B: precision, recall and F1
+for the premium class, accuracy, ROC-AUC from each model's continuous scores,
+and the confusion matrix.
+
+\textbf{Task~A target for the trees.} A tree can only follow the floor area
+in steps, so both trees are fitted on $\log(\text{price}/\text{area})$ (area
+in m$^2$, or in sot for land plots) and the listing's own $\log(\text{area})$
+is added back to the prediction. The area is an ordinary feature of the
+listing; \texttt{unit\_price} and \texttt{total\_price} are dropped from
+every feature matrix and price per m$^2$ is never an input, only the training
+target. Because the area is added back exactly, the residuals are the same as
+on $\log(\text{price})$, so every Task~A metric, $R^2$ included, is computed
+on $\log(\text{price})$. The tree settings are tuned on the validation split
+(\texttt{src/tree\_experiments.py}, Table~\ref{tab:tree-study}) and the same
+settings are used in every table.
+
+\textbf{Baselines.} scikit-learn's \texttt{DecisionTreeRegressor} and
+\texttt{DecisionTreeClassifier} get our tree's criterion, depth and leaf
+settings. Against our Pegasos SVM we fit \texttt{SGDClassifier} (hinge loss,
+$\alpha=\lambda$, whole epochs with at least as many updates as Pegasos) and
+\texttt{LinearSVC} ($C=1/(\lambda n)$ for $n$ training rows), each in a
+\texttt{Pipeline} after \texttt{StandardScaler}. All three target the same
+$\lambda$-regularised hinge loss on features standardised with training
+statistics only, but none is run to the exact optimum: Pegasos and SGD stop
+after a fixed number of updates, \texttt{LinearSVC} after 20{,}000
+iterations (with a convergence warning), and each handles the intercept its
+own way. Trivial floors predict the training mean (Task~A) and the majority
+class (Task~B).
+
+\textbf{Analysis and timing.} Permutation importance (on the validation
+split, for every model) and the trees' impurity decrease treat all one-hot
+columns of a feature as one; for the linear SVMs we show the largest
+individual weights on the standardised columns. Test errors are broken down
+by fixed price bands, property category, the number of training listings in
+the listing's district and the distance from the tier threshold, and we list
+the listings our tree misprices most.
+Fit and predict times are wall-clock seconds on one machine; fit time against
+training-set size is the median of three fits on nested subsamples of
+$1/8$, $1/4$, $1/2$ and all of the training split.
+
+\textbf{Reproducibility.} All randomness is seeded, and
+\texttt{python -m src.run\_all} regenerates every number, table and figure
+in this report from the raw data; a test checks that two runs give identical
+numbers apart from the timings.
 
 \section{Results}
-Lead with a results table; back every claim with a number or figure.
+Table~\ref{tab:results} compares the models on both tasks on the held-out
+test split. Tables~\ref{tab:task-a} and~\ref{tab:task-b} add the
+cross-validated scores and the remaining metrics, and Figures~\ref{fig:pred-actual}
+and~\ref{fig:confusion} show the Task~A predictions and the Task~B confusion
+matrices. Table~\ref{tab:timing} gives the fit and predict times, and
+Figure~\ref{fig:scaling} how fit time grows with the training-set size.
+Figure~\ref{fig:roc} shows the ROC curves behind the AUC column.
+Figures~\ref{fig:importance} and~\ref{fig:impurity} show which features the
+models rely on, and Figure~\ref{fig:svm-weights} the largest weights of the
+linear SVMs. Figures~\ref{fig:errors-a} and~\ref{fig:errors-b} break the test
+errors down by price band, by how many training listings share the
+listing's district, and by distance from the tier threshold.
 
-\begin{table}[t]
-  \centering
-  \caption{Headline results (test set, mean $\pm$ std over folds).}
-  \label{tab:results}
-  \begin{tabular}{@{}lcc@{}}
-    \toprule
-    Model & Task A (RMSE) & Task B (F1) \\
-    \midrule
-    Ours: decision tree     & --- & --- \\
-    Ours: SVM (Pegasos)     & n/a & --- \\
-    scikit-learn baseline   & --- & --- \\
-    \bottomrule
-  \end{tabular}
-\end{table}
+Table~\ref{tab:tree-study} gives the tree study behind the trees' settings:
+what was chosen on the validation split, how closely our tree reproduces
+scikit-learn's, and the random forest built from our own trees (Problem~9).
+Figures~\ref{fig:tree-study} and~\ref{fig:tree-grid} show the validation
+evidence for those choices and Figure~\ref{fig:forest} the forest's score as
+trees are added.
+Table~\ref{tab:errors} breaks the test errors down by property category and
+by district coverage, and Table~\ref{tab:worst} lists the listings our tree
+misprices most.
+
+\generatedtable{tables/headline.tex}
+\generatedtable{tables/task_a.tex}
+\generatedtable{tables/task_b.tex}
+\generatedtable{tables/timing.tex}
+\generatedtable{tables/tree_study.tex}
+
 
 \begin{figure}[t]
   \centering
-  % \includegraphics[width=\linewidth]{figures/your_plot.pdf}
-  \fbox{\parbox[c][3.2cm][c]{0.9\linewidth}{\centering\small
-    Replace with a figure (e.g.\ validation curve, confusion matrix,
-    or feature importances). Save plots to \texttt{figures/}.}}
-  \caption{One clear figure beats ten decorative ones.}
-  \label{fig:main}
+  \generatedfigure{figures/eval_pred_vs_actual.pdf}{\linewidth}
+  \caption{Task~A: predicted vs actual $\log(\text{price})$ on the test
+    split; the dashed line is a perfect prediction.}
+  \label{fig:pred-actual}
 \end{figure}
+
+\begin{figure*}[t]
+  \centering
+  \generatedfigure{figures/eval_confusion_matrices.pdf}{\textwidth}
+  \caption{Task~B confusion matrices on the test split (rows: actual
+    tier, columns: predicted tier).}
+  \label{fig:confusion}
+\end{figure*}
+
+\begin{figure}[t]
+  \centering
+  \generatedfigure{figures/eval_fit_time_scaling.pdf}{\linewidth}
+  \caption{Fit time against training-set size (median of three fits on
+    nested subsamples of the training split; log--log axes). SGD's epochs
+    and \texttt{LinearSVC}'s $C$ are re-matched at each size;
+    Table~\ref{tab:timing} notes anything else our SVM's fit time
+    includes.}
+  \label{fig:scaling}
+\end{figure}
+
+\begin{figure}[t]
+  \centering
+  \generatedfigure{figures/eval_roc_curves.pdf}{\linewidth}
+  \caption{Task~B ROC curves on the test split, from each model's
+    continuous scores (the SVMs' margins, the trees' predicted probabilities).}
+  \label{fig:roc}
+\end{figure}
+
+\begin{figure*}[t]
+  \centering
+  \generatedfigure{figures/eval_feature_importance.pdf}{0.8\textwidth}
+  \caption{Permutation importance on the validation split: how much the
+    score drops (RMSE on $\log(\text{price})$ rises for Task~A, F1 falls
+    for Task~B) when all one-hot columns of a feature are shuffled
+    together; mean of three shuffles, largest twelve features per model.}
+  \label{fig:importance}
+\end{figure*}
+
+\begin{figure}[t]
+  \centering
+  \generatedfigure{figures/eval_tree_impurity_importance.pdf}{\linewidth}
+  \caption{Impurity-decrease importance of the trees on the training
+    split, as a share of the total decrease, with the one-hot columns of a
+    feature summed. For Task~A the log area is added back outside the
+    tree, so the area's importance here understates how much it drives the
+    price.}
+  \label{fig:impurity}
+\end{figure}
+
+\begin{figure*}[t]
+  \centering
+  \generatedfigure{figures/eval_svm_weights.pdf}{0.85\textwidth}
+  \caption{The twelve largest weights (by absolute value) of each linear
+    SVM, on standardised columns, one-hot columns shown separately; blue
+    pushes a listing towards premium, red towards standard. Each panel has
+    its own scale.}
+  \label{fig:svm-weights}
+\end{figure*}
+
+\begin{figure*}[t]
+  \centering
+  \begin{minipage}[b]{0.56\textwidth}
+    \centering
+    \generatedfigure{figures/eval_error_by_price_band.pdf}{\linewidth}
+  \end{minipage}\hfill
+  \begin{minipage}[b]{0.42\textwidth}
+    \centering
+    \generatedfigure{figures/eval_error_by_district_coverage.pdf}{\linewidth}
+  \end{minipage}
+  \caption{Task~A test error by price band (left) and by the number of
+    training listings in the listing's district (right): median of
+    $|$predicted $-$ actual$|$ / actual price; $n$ = test listings in the
+    group.}
+  \label{fig:errors-a}
+\end{figure*}
+
+\begin{figure}[t]
+  \centering
+  \generatedfigure{figures/eval_error_by_threshold_margin.pdf}{\linewidth}
+  \caption{Task~B test error rate by distance from the tier threshold,
+    $|\log(\text{price}/\text{threshold})|$; $n$ = test listings in the
+    group.}
+  \label{fig:errors-b}
+\end{figure}
+
+\begin{figure*}[t]
+  \centering
+  \generatedfigure{figures/tree_b_depth_gini_entropy.png}{0.48\textwidth}\hfill
+  \generatedfigure{figures/tree_a_depth.png}{0.48\textwidth}
+  \caption{Tree study on the validation split. Left: Task~B F1 against
+    max\_depth for Gini and entropy, each at its own tuned
+    min\_samples\_leaf. Right: Task~A RMSE of $\log(\text{price})$ against
+    max\_depth with 1-row leaves and, if different, with the tuned leaf
+    size. Dashed: training split, solid: validation split.}
+  \label{fig:tree-study}
+\end{figure*}
+
+\begin{figure}[t]
+  \centering
+  \generatedfigure{figures/tree_a_grid.png}{\linewidth}
+  \caption{Task~A validation RMSE of $\log(\text{price})$ over max\_depth
+    $\times$ min\_samples\_leaf; the red frame marks the chosen setting.}
+  \label{fig:tree-grid}
+\end{figure}
+
+\begin{figure*}[t]
+  \centering
+  \generatedfigure{figures/forest_b_n_trees.png}{0.48\textwidth}\hfill
+  \generatedfigure{figures/forest_a_n_trees.png}{0.48\textwidth}
+  \caption{Random forest of our own trees (Problem~9): validation and test
+    score as trees are added, for Task~B (F1, left) and Task~A (RMSE of
+    $\log(\text{price})$, right), against our single tuned tree (grey,
+    dashed) and scikit-learn's RandomForest with the same settings (red,
+    dotted), both on the test split.}
+  \label{fig:forest}
+\end{figure*}
+
+\generatedtable{tables/errors.tex}
+\generatedtable{tables/worst.tex}
 
 \section{Discussion and Limitations}
 Where and why each model fails (luxury outliers, sparse districts,

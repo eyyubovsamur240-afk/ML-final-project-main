@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -68,3 +70,39 @@ def test_no_dataset_or_large_files_tracked():
         pytest.skip("not a git checkout (e.g. a downloaded ZIP)")
     problems = {f: check_no_data.problems_for(f) for f in check_no_data.tracked_files()}
     assert {f: p for f, p in problems.items() if p} == {}
+
+
+def test_submission_check_wants_the_report_tables_committed(tmp_path: Path, monkeypatch):
+    from tools import check_submission
+
+    if shutil.which("git") is None:
+        pytest.skip("git is not installed")
+    (tmp_path / "report" / "tables").mkdir(parents=True)
+    (tmp_path / "report" / "figures").mkdir()
+    (tmp_path / "report" / "report.tex").write_text(
+        "\\newcommand{\\generatedtable}[1]{\\IfFileExists{#1}{\\input{#1}}{}}\n"
+        "\\graphicspath{{figures/}}\n"
+        "% \\input{tables/old.tex} is commented out\n"
+        "50\\% of rows \\\\% \\input{tables/also_old.tex} is a comment after a line break\n"
+        "\\generatedtable{tables/headline.tex}\n"
+        "\\input{tables/task_a}\n"                                  # LaTeX adds .tex
+        "\\includegraphics[width=\\linewidth]{figures/eval_a}\n"     # ... and .pdf
+        "\\includegraphics{eval_b.pdf}\n", encoding="utf-8")          # found via graphicspath
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    monkeypatch.setattr(check_submission, "ROOT", tmp_path)
+
+    def report_problems():
+        errors, warnings = check_submission.check()
+        return [p for p in errors + warnings if "report.tex" in p]
+
+    files = {"tables/headline.tex": "\\begin{table}\\label{tab:results}\\end{table}\n",
+             "tables/task_a.tex": "\\begin{table}\\label{tab:task-a}\\end{table}\n",
+             "figures/eval_a.pdf": "%PDF", "figures/eval_b.pdf": "%PDF"}
+    problems = report_problems()
+    assert any("tables/headline.tex" in p and "eval_b.pdf" in p for p in problems)
+    assert not any("old.tex" in p for p in problems), "commented-out includes are ignored"
+    for rel, text in files.items():
+        (tmp_path / "report" / rel).write_text(text, encoding="utf-8")
+    assert any("not in the repo" in p for p in report_problems()), "generated, not committed"
+    subprocess.run(["git", "add", "-f", *files], cwd=tmp_path / "report", check=True)
+    assert report_problems() == [], "committed, and their \\label counts as the results table"

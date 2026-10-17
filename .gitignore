@@ -15,10 +15,13 @@ env/
 report/figures/*.pdf
 report/figures/*.png
 !report/figures/.gitkeep
+report/figures/fast/
+report/figures/no_tree_study/
 *.log
 *.aux
 *.out
 results/
+report/tables/
 *.csv.gz
 
 # --- OS / editor cruft ---

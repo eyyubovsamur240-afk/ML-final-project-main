@@ -1,6 +1,9 @@
-# Pin your exact versions (run `pip freeze` once your env works).
-# These are sensible starting points — adjust as needed, then PIN them.
+# Exact versions for Python 3.11, so a clean install reproduces our numbers.
+# scipy, joblib and threadpoolctl are scikit-learn's own dependencies, pinned too.
 numpy==1.26.4
+scipy==1.17.1
+joblib==1.6.0
+threadpoolctl==3.7.0
 pandas==2.2.2
 matplotlib==3.8.4
 scikit-learn==1.4.2   # baselines / optional bonuses ONLY — not for your models
