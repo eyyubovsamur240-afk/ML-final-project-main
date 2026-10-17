@@ -106,3 +106,35 @@ def test_submission_check_wants_the_report_tables_committed(tmp_path: Path, monk
     assert any("not in the repo" in p for p in report_problems()), "generated, not committed"
     subprocess.run(["git", "add", "-f", *files], cwd=tmp_path / "report", check=True)
     assert report_problems() == [], "committed, and their \\label counts as the results table"
+
+
+def test_submission_check_flags_placeholders_and_undefined_numbers(tmp_path: Path, monkeypatch):
+    from tools import check_submission
+
+    if shutil.which("git") is None:
+        pytest.skip("git is not installed")
+    (tmp_path / "report" / "tables").mkdir(parents=True)
+    report = tmp_path / "report" / "report.tex"
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    monkeypatch.setattr(check_submission, "ROOT", tmp_path)
+
+    def report_problems():
+        errors, _ = check_submission.check()
+        return [p for p in errors if "report.tex" in p and "not in the repo" not in p]
+
+    report.write_text("\\IfFileExists{tables/numbers.tex}{\\input{tables/numbers.tex}}{}\n"
+                      "RMSE \\val{TreeARmse}, F1 \\val{SvmBFOne}.\n"
+                      "% \\val{OldName} in a comment\n"
+                      "\\textbf{[TO FILL after the full run: the takeaway.]}\n", encoding="utf-8")
+    problems = report_problems()
+    assert any("1 `[TO FILL" in p for p in problems)
+    assert not any("numbers.tex` does not define" in p for p in problems), "no numbers yet"
+    (tmp_path / "report" / "tables" / "numbers.tex").write_text(
+        "\\defval{TreeARmse}{0.250}\n", encoding="utf-8")
+    undefined = [p for p in report_problems() if "does not define" in p]
+    assert len(undefined) == 1 and "SvmBFOne" in undefined[0] and "OldName" not in undefined[0]
+    report.write_text(report.read_text(encoding="utf-8").replace(
+        "\\textbf{[TO FILL after the full run: the takeaway.]}", "Done."), encoding="utf-8")
+    (tmp_path / "report" / "tables" / "numbers.tex").write_text(
+        "\\defval{TreeARmse}{0.250}\n\\defval{SvmBFOne}{0.810}\n", encoding="utf-8")
+    assert report_problems() == []

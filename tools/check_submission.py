@@ -158,6 +158,18 @@ def check() -> tuple[list[str], list[str]]:
                 f"{', '.join(missing)} — run `python -m src.run_all`, then "
                 "`git add -f` them (see README)"
             )
+        to_fill = body.count("[TO FILL")
+        if to_fill:
+            errors.append(f"`report/report.tex` still has {to_fill} `[TO FILL ...]` "
+                          "placeholders for text that needs the full run's numbers")
+        if (report.parent / "tables" / "numbers.tex").exists():
+            defined = set(re.findall(r"\\defval\{([^}]+)\}", tex))
+            undefined = sorted(set(re.findall(r"\\val\{([^}]+)\}", body)) - defined)
+            if undefined:
+                errors.append(
+                    "`report/report.tex` quotes numbers that `report/tables/numbers.tex` does "
+                    f"not define (they print as [Name?]): {', '.join(undefined)}"
+                )
         if not re.search(r"\\label\{tab:(?!data\})[^}]*\}", tex):
             warnings.append(
                 "`report/report.tex`: no results table found (no `\\label{tab:...}` "
