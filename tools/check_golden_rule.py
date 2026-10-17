@@ -41,6 +41,7 @@ SRC = ROOT / "src"
 PROTECTED = [
     "src/decision_tree.py",
     "src/svm.py",
+    "src/random_forest.py",
 ]
 
 # Third-party top-level packages allowed inside PROTECTED files, besides the
