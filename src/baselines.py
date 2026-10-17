@@ -41,8 +41,6 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.svm import LinearSVC
 from sklearn.tree import DecisionTreeClassifier, DecisionTreeRegressor
 
-from .tree_experiments import log_size
-
 # Our criterion names -> scikit-learn's.
 _SK_CRITERION = {"mse": "squared_error", "gini": "gini", "entropy": "entropy"}
 
@@ -200,6 +198,10 @@ class PerSizeTarget:
         self.feature_names = list(feature_names)
 
     def _log_size(self, X):
+        # Imported here: run_all only builds this model once the tree study has run,
+        # and baselines must import on a checkout that has no tree study yet.
+        from .tree_experiments import log_size
+
         return log_size(np.asarray(X, dtype=float), self.feature_names)
 
     def fit(self, X, y):

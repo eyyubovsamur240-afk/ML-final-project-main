@@ -12,7 +12,8 @@ What it does:
      tree on the validation split, compares it with scikit-learn's node by
      node and grows the random forest bonus; the tuned settings are the ones
      the trees use below (--no-tree-study keeps TREE_REGRESSION / _CLASSIFICATION
-     and writes to no_tree_study/ subfolders, so the report's outputs are kept)
+     and writes to no_tree_study/ subfolders, so the report's outputs are kept;
+     a checkout without src/tree_experiments.py keeps them too)
   2. Task A, log(price): our decision tree vs DecisionTreeRegressor vs the train mean
   3. Task B, price tier: our decision tree and our Pegasos SVM vs scikit-learn's
      DecisionTreeClassifier, SGDClassifier (hinge) and LinearSVC, and the majority class
@@ -47,7 +48,7 @@ from typing import Callable
 
 import numpy as np
 
-from . import baselines, data_prep, error_analysis, evaluate, plots, tree_experiments
+from . import baselines, data_prep, error_analysis, evaluate, plots
 from .decision_tree import DecisionTree
 from .svm import PegasosSVM
 
@@ -710,6 +711,8 @@ def _analysis_captions(config: dict, study: dict | None, n_worst: int) -> dict:
                  "land).",
     }
     if study:
+        from . import tree_experiments
+
         def grid(values):
             return ", ".join("unlimited" if v is None else str(v) for v in values)
 
@@ -939,6 +942,8 @@ def tree_study(data: dict, fig_dir: str) -> dict:
     summary also keeps the evidence behind them (the validation grid and curves,
     the comparison with scikit-learn, the forest's curves) for metrics.json.
     """
+    from . import tree_experiments
+
     X, parts = data["X"], ("train", "val", "test")
     task_a = tuple(a for p in parts for a in (X[p], data["log_price"][p]))
     task_b = tuple(a for p in parts for a in (X[p], data["tier"][p]))
@@ -1020,9 +1025,14 @@ def main(argv: list[str] | None = None) -> dict:
           f"tier threshold = {data['threshold']:,.0f} AZN (train median)")
 
     # 1b. tree study: its validation-tuned settings and Task A target are the
-    # ones the trees use in the tables below
+    # ones the trees use in the tables below. src/tree_experiments.py comes with
+    # the decision tree; until a checkout has it, the trees keep the fixed settings.
     tree_a, tree_b, per_size, study = TREE_REGRESSION, TREE_CLASSIFICATION, False, None
-    if not args.no_tree_study:
+    if not args.no_tree_study and importlib.util.find_spec(
+            f"{__package__}.tree_experiments") is None:
+        print("No src/tree_experiments.py yet: no tree study, the trees use the fixed "
+              "TREE_REGRESSION / TREE_CLASSIFICATION settings")
+    elif not args.no_tree_study:
         print("Tree study (tuning on validation, scikit-learn comparison, random forest) ...",
               flush=True)
         if args.no_figures:

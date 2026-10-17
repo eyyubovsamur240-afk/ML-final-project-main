@@ -9,6 +9,7 @@ small stand-in models, so every code path for "our" models is exercised now.
 from __future__ import annotations
 
 import importlib.machinery
+import importlib.util
 import json
 import re
 import sys
@@ -24,6 +25,12 @@ from src import run_all
 
 CATEGORIES = ["Yeni tikili", "Köhnə tikili", "Obyekt"]
 LOCATIONS = ["Səbail r.", "Nəsimi r.", "Xırdalan", "Binə q."]
+
+# src/tree_experiments.py comes with the decision tree. Without it run_all skips the
+# tree study, and these tests check that fallback instead of the study's outputs.
+HAVE_TREE_STUDY = importlib.util.find_spec("src.tree_experiments") is not None
+needs_tree_study = pytest.mark.skipif(not HAVE_TREE_STUDY,
+                                      reason="no src/tree_experiments.py on this checkout yet")
 
 
 def fake_data(n: int = 420, seed: int = 0) -> dict:
@@ -218,7 +225,8 @@ def test_run_all_with_stand_in_models_exercises_every_step(tmp_path, monkeypatch
     assert svm_row.count("[") == 2, "test F1 and test AUC both have an interval"
     tex = (tmp_path / "tables" / "timing.tex").read_text(encoding="utf-8")
     assert "CV fit (s)" in tex and "294 rows" in tex
-    for name in ("headline.tex", "task_a.tex", "task_b.tex", "timing.tex", "tree_study.tex",
+    study_tables = ("tree_study.tex",) if HAVE_TREE_STUDY else ()
+    for name in ("headline.tex", "task_a.tex", "task_b.tex", "timing.tex", *study_tables,
                  "errors.tex", "worst.tex"):
         lines = (tmp_path / "tables" / name).read_text(encoding="utf-8").splitlines()
         spec = next(line for line in lines if r"\begin{tabular}" in line).split("}{", 1)[1]
@@ -233,21 +241,29 @@ def test_run_all_with_stand_in_models_exercises_every_step(tmp_path, monkeypatch
     assert {"eval_pred_vs_actual.pdf", "eval_confusion_matrices.pdf", "eval_roc_curves.pdf",
             "eval_svm_weights.pdf", "eval_fit_time_scaling.pdf",
             "eval_tree_impurity_importance.pdf"} <= figures
-    assert {"tree_a_grid.png", "tree_a_depth.png", "tree_b_depth_gini_entropy.png",
-            "forest_a_n_trees.png", "forest_b_n_trees.png"} <= figures, "the report uses these"
 
     # The tree study, the forest and the error analysis reach the report as tables.
     study = saved["tree_study"]
-    for key in ("task_a", "task_b"):
-        chosen = [g["validation"] for g in study[key]["grid"]
-                  if (g["max_depth"], g["min_samples_leaf"]) == (
-                      study[key]["settings"]["max_depth"], study[key]["settings"]["min_samples_leaf"])]
-        assert chosen == [study[key]["validation"]], "the validation grid is saved"
-        assert len(study[key]["forest_test_curve"]) == study[key]["forest"]["n_estimators"]
-    assert set(study["task_b"]["criterion_curves"]) == {"gini", "entropy"}
-    tex = (tmp_path / "tables" / "tree_study.tex").read_text(encoding="utf-8")
-    assert r"\label{tab:tree-study}" in tex and "Test, our forest" in tex
-    assert "max\\_depth" in tex and "tuned together on the validation split" in tex
+    if HAVE_TREE_STUDY:
+        assert {"tree_a_grid.png", "tree_a_depth.png", "tree_b_depth_gini_entropy.png",
+                "forest_a_n_trees.png", "forest_b_n_trees.png"} <= figures, "the report uses these"
+        for key in ("task_a", "task_b"):
+            settings = study[key]["settings"]
+            chosen = [g["validation"] for g in study[key]["grid"]
+                      if (g["max_depth"], g["min_samples_leaf"]) == (
+                          settings["max_depth"], settings["min_samples_leaf"])]
+            assert chosen == [study[key]["validation"]], "the validation grid is saved"
+            assert len(study[key]["forest_test_curve"]) == study[key]["forest"]["n_estimators"]
+        assert set(study["task_b"]["criterion_curves"]) == {"gini", "entropy"}
+        tex = (tmp_path / "tables" / "tree_study.tex").read_text(encoding="utf-8")
+        assert r"\label{tab:tree-study}" in tex and "Test, our forest" in tex
+        assert "max\\_depth" in tex and "tuned together on the validation split" in tex
+        assert "## Tree study" in md
+    else:
+        assert study is None and saved["config"]["tree_settings_from"] == "fixed"
+        assert saved["config"]["tree_regression"] == run_all.TREE_REGRESSION
+        assert not (tmp_path / "tables" / "tree_study.tex").exists()
+        assert "## Tree study" not in md
     tex = (tmp_path / "tables" / "errors.tex").read_text(encoding="utf-8")
     assert r"\textit{By property category}" in tex and r"\begin{table*}" in tex
     assert r"\textit{By training listings in the district}" in tex
@@ -255,7 +271,7 @@ def test_run_all_with_stand_in_models_exercises_every_step(tmp_path, monkeypatch
         assert run_all.evaluate.latex_escape(category) in tex
     tex = (tmp_path / "tables" / "worst.tex").read_text(encoding="utf-8")
     assert r"\label{tab:worst}" in tex and tex.count(r"\%") == 8, "eight listings, error in %"
-    for heading in ("## Tree study", "## Test errors of our models, by property category",
+    for heading in ("## Test errors of our models, by property category",
                     "## Task A: largest test errors of our tree"):
         assert heading in md
 
@@ -401,6 +417,7 @@ def _fake_data_with_land_area(path=None, fast=False):
     return data
 
 
+@needs_tree_study
 def test_headline_trees_are_the_tree_studys_trees(tmp_path, monkeypatch):
     """The tables score the tree the study tuned on validation, on the same target,
     so the report has one Task A number for our tree, not two."""
@@ -420,6 +437,7 @@ def test_headline_trees_are_the_tree_studys_trees(tmp_path, monkeypatch):
     assert not (tmp_path / "figures").exists(), "--no-figures writes no tree-study figures"
 
 
+@needs_tree_study
 def test_per_size_target_predicts_log_price():
     from src.baselines import PerSizeTarget
 
