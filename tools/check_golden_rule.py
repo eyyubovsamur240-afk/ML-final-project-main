@@ -41,6 +41,7 @@ SRC = ROOT / "src"
 PROTECTED = [
     "src/decision_tree.py",
     "src/svm.py",
+    "src/rff.py",
     "src/random_forest.py",
 ]
 
