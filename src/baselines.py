@@ -143,9 +143,9 @@ class MajorityClassifier:
 class SizedToFitData:
     """A scikit-learn baseline built when fit() is called: build(n_fit_rows) -> model.
 
-    LinearSVC's C = 1/(lambda*n) and SGD's epoch budget depend on n, so a model
-    built once for the full training split would solve a different problem on a
-    CV fold or on a scaling-study subsample.
+    LinearSVC's C = 1/(lambda*n) and the row SGD starts averaging at (half of its
+    epochs * n updates) depend on n, so a model built once for the full training
+    split would solve a different problem on a CV fold or on a scaling-study subsample.
     """
 
     def __init__(self, build):
