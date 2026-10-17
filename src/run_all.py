@@ -88,7 +88,7 @@ OUR_RFF = "Ours: SVM (RFF)"
 SK_TREE = "sklearn: decision tree"
 SK_SGD = "sklearn: SGD (hinge)"
 SK_LINEAR_SVC = "sklearn: LinearSVC"
-SK_RFF = "sklearn: RFF + SGD (hinge)"
+SK_RFF = "sklearn: RFF + SGD"   # RBFSampler, then SGDClassifier (hinge)
 TRIVIAL = "Trivial baseline"
 
 
@@ -632,7 +632,8 @@ def svm_study_rows(study: dict, rows_b: list[dict], latex: bool = False) -> list
                  if r["average"] and r["epochs"] == ls["n_epochs"])
     sym = (lambda t, p: Tex(t) if latex else p)  # noqa: E731
     items = [
-        ("Features", "standardized columns", f"RFF, D = {rs['n_components']:,}"),
+        ("Features", "standardized", sym(f"RFF, $D$ = {rs['n_components']:,}",
+                                          f"RFF, D = {rs['n_components']:,}")),
         (sym(r"$\lambda$ (validation F1)", "lambda (validation F1)"),
          _sci(ls["lambda_"], latex), _sci(rs["lambda_"], latex)),
         (sym(r"$\gamma$ (validation F1)", "gamma (validation F1)"), "", _sci(rs["gamma"], latex)),
@@ -749,6 +750,8 @@ def _svm_captions(config: dict, study: dict) -> dict:
 
 DATA_STEP_LABELS = {"Houses with unknown room count":
                     "Unknown room count (categories that have rooms)"}
+# The label column wraps, so the long labels above fit one report column.
+WRAPPED_LABEL = r">{\raggedright\arraybackslash}p{%s\linewidth}"
 
 
 def data_rows(report: dict) -> list[tuple[str, list[dict]]]:
@@ -762,10 +765,9 @@ def data_rows(report: dict) -> list[tuple[str, list[dict]]]:
     dup = d["cross_split_duplicates"]
     final = [
         {"item": "Features (one-hot columns counted)", "removed": "", "left": d["n_features"]},
-        {"item": "Training / validation / test listings", "removed": "",
-         "left": f"{d['train']:,} / {d['val']:,} / {d['test']:,}"},
-        {"item": "Premium share: training / validation / test", "removed": "",
-         "left": " / ".join(_pct(share[p]) for p in ("train", "val", "test"))},
+        *({"item": f"{name} listings (premium share)", "removed": "",
+           "left": f"{d[split]:,} ({_pct(share[split])})"}
+          for name, split in (("Training", "train"), ("Validation", "val"), ("Test", "test"))),
         {"item": "Tier threshold (training median, AZN)", "removed": "",
          "left": f"{d['tier_threshold_azn']:,.0f}"},
         {"item": "Validation/test listings with a twin in another split", "removed": "",
@@ -779,7 +781,8 @@ def _data_caption(config: dict, report: dict) -> str:
     prefix = "SMOKE RUN (training split subsampled to 3,000 rows). " if config["fast"] else ""
     key = ", ".join(evaluate.latex_escape(c) for c in report["data"]["cross_split_duplicates"]["key"])
     return (f"{prefix}Dataset summary. Top: rows removed by each cleaning step and rows left. "
-            "Bottom: the data the models see; premium = above the training median price. A twin "
+            "Bottom: the data the models see, with the share of premium listings (priced above "
+            "the training median) in brackets. A twin "
             f"has the same {key} as a listing in another split: a re-post that the cleaning keeps "
             "because its listing ID or description differs.")
 
@@ -1213,7 +1216,7 @@ def write_outputs(report: dict, results_dir: str, tables_dir: str) -> list[str]:
         tex["svm_study.tex"] = _latex_cells(
             evaluate.latex_table, svm_study_rows(svm, report["task_b"], latex=True),
             ["item", "linear", "rff"], ["", "Linear SVM", "RFF SVM"], svm_captions["study"],
-            label="tab:svm-study", align="lcc")
+            label="tab:svm-study", align=WRAPPED_LABEL % 0.4 + "cc")
         tex["svm_convergence.tex"] = _latex_cells(
             _panel_table, svm_convergence_panels(svm, latex=True), SVM_CONVERGENCE_TABLE[0],
             SVM_CONVERGENCE_TABLE[2], svm_captions["convergence"], label="tab:svm-convergence",
@@ -1224,7 +1227,7 @@ def write_outputs(report: dict, results_dir: str, tables_dir: str) -> list[str]:
     tex["data.tex"] = _panel_table(data_rows(report), ["item", "removed", "left"],
                                    ["", "Removed", "Rows / value"],
                                    _data_caption(report["config"], report), label="tab:data",
-                                   align="lrr")
+                                   align=WRAPPED_LABEL % 0.5 + "rr")
     tex["numbers.tex"] = numbers_tex(report_numbers(report), report["config"]["fast"])
     if any(rows for _, rows in errors):
         tex["errors.tex"] = _panel_table(errors, ERROR_TABLE[0], ERROR_TABLE[2], more["errors"],

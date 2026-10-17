@@ -251,6 +251,8 @@ def test_run_all_with_stand_in_models_exercises_every_step(tmp_path, monkeypatch
         lines = (tmp_path / "tables" / name).read_text(encoding="utf-8").splitlines()
         spec = next(line for line in lines if r"\begin{tabular}" in line).split("}{", 1)[1]
         spec = re.sub(r"@\{(?:[^{}]|\{[^{}]*\})*\}", "", spec)  # drop @{...} spacing groups
+        spec = re.sub(r">\{[^{}]*\}", "", spec)       # and >{...} column formats
+        spec = re.sub(r"p\{[^{}]*\}", "l", spec)      # a wrapped p{width} column is one column
         n_columns = sum(spec.count(c) for c in "lcr")
         header = lines[lines.index(r"    \toprule") + 1]
         assert header.count("&") + 1 == n_columns, f"{name}: column spec matches the header"
