@@ -14,6 +14,10 @@ What it does:
      the trees use below (--no-tree-study keeps TREE_REGRESSION / _CLASSIFICATION
      and writes to no_tree_study/ subfolders, so the report's outputs are kept;
      a checkout without src/tree_experiments.py keeps them too)
+  1c. the SVM study (src/svm_study.py, Problems 3b-3d, 4b): sweeps lambda,
+     learning-rate schedules, epochs and the RFF bandwidth gamma on the
+     validation split; the chosen lambda is the one our SVM (and the matched
+     scikit-learn baselines) use below (--no-svm-study keeps the fixed SVM)
   2. Task A, log(price): our decision tree vs DecisionTreeRegressor vs the train mean
   3. Task B, price tier: our decision tree and our Pegasos SVM vs scikit-learn's
      DecisionTreeClassifier, SGDClassifier (hinge) and LinearSVC, and the majority class
@@ -61,8 +65,9 @@ FIGURES_DIR = plots.FIGURES_DIR
 # --- Final hyperparameters (Problem 4c) ----------------------------------------
 # A normal run takes the tree settings from the tree study, which tunes them on
 # the VALIDATION split (tree_experiments.run); TREE_REGRESSION and
-# TREE_CLASSIFICATION are only the --no-tree-study fallback. SVM is fixed: no
-# code tunes lambda_ or n_iters yet (Problem 4b). The scikit-learn baselines
+# TREE_CLASSIFICATION are only the --no-tree-study fallback. The SVM's lambda_
+# comes from the SVM study (svm_study.run, validation F1); SVM is only the
+# --no-svm-study fallback, and n_iters stays fixed. The scikit-learn baselines
 # reuse the same values, which is what makes the comparison in Problem 5 a
 # matched one.
 TREE_REGRESSION = {"criterion": "mse", "max_depth": 12, "min_samples_split": 2,
@@ -106,22 +111,23 @@ def task_a_models(tree: dict | None = None, feature_names: list[str] | None = No
     ]
 
 
-def task_b_models(tree: dict | None = None) -> list[ModelSpec]:
+def task_b_models(tree: dict | None = None, svm: dict | None = None) -> list[ModelSpec]:
     tree = TREE_CLASSIFICATION if tree is None else tree
+    svm = SVM if svm is None else svm
 
     # SGD's epochs and LinearSVC's C depend on the number of fit rows, so they are
     # built at fit time: matched on the full split, on every CV fold and in the scaling study.
     def sgd(n):
-        return baselines.sk_sgd_hinge(SVM["lambda_"], baselines.epochs_for(SVM["n_iters"], n), SEED)
+        return baselines.sk_sgd_hinge(svm["lambda_"], baselines.epochs_for(svm["n_iters"], n), SEED)
 
     def linear_svc(n):
-        return baselines.sk_linear_svc(SVM["lambda_"], n, SEED)
+        return baselines.sk_linear_svc(svm["lambda_"], n, SEED)
 
     return [
         ModelSpec(OUR_TREE, lambda: DecisionTree(task="classification", random_state=SEED,
                                                  **tree), ours=True),
         # The hinge loss is scale-sensitive: standardize with the fit rows' statistics.
-        ModelSpec(OUR_SVM, lambda: baselines.StandardScaled(PegasosSVM(random_state=SEED, **SVM)),
+        ModelSpec(OUR_SVM, lambda: baselines.StandardScaled(PegasosSVM(random_state=SEED, **svm)),
                   ours=True),
         ModelSpec(SK_TREE, lambda: baselines.sk_tree_classifier(tree, SEED)),
         ModelSpec(SK_SGD, lambda: baselines.SizedToFitData(sgd)),
@@ -782,6 +788,12 @@ def write_outputs(report: dict, results_dir: str, tables_dir: str) -> list[str]:
         md += ["", "## Tree study: settings tuned on validation, test scores, random forest", "",
                "```", evaluate.format_table(tree_study_rows(study), ["item", "task_a", "task_b"],
                                             ["", "Task A", "Task B"]), "```"]
+    svm_res = report.get("svm_study")
+    if svm_res:
+        md += ["", "## SVM study: lambda sweep on validation (chosen lambda = "
+               f"{svm_res['best_lambda']:g}, RFF gamma = {svm_res['best_gamma']:g})", "", "```",
+               evaluate.format_table(svm_res["lambda_sweep"], SVM_STUDY_COLUMNS[0],
+                                     digits=4), "```"]
     analysis = report["analysis"]
     errors = [(title, error_rows(analysis, key)) for key, title in ERROR_GROUPINGS]
     worst = worst_rows(analysis)
@@ -822,6 +834,15 @@ def write_outputs(report: dict, results_dir: str, tables_dir: str) -> list[str]:
         tex["tree_study.tex"] = evaluate.latex_table(
             tree_study_rows(study), ["item", "task_a", "task_b"], ["", "Task A", "Task B"],
             more["tree_study"], label="tab:tree-study", align="lcc")
+    svm_res = report.get("svm_study")
+    if svm_res:
+        tex["svm_study.tex"] = evaluate.latex_table(
+            svm_res["lambda_sweep"], *SVM_STUDY_COLUMNS,
+            "Our Pegasos SVM on Task~B for each $\\lambda$ (train and validation splits only): "
+            "weight norm, margin width, share of training rows that are support vectors, final "
+            f"objective and F1. Chosen $\\lambda = {svm_res['best_lambda']:g}$ (best validation "
+            "F1); random-Fourier-feature SVM: chosen $\\gamma = "
+            f"{svm_res['best_gamma']:g}$.", label="tab:svm-study", digits=4)
     if any(rows for _, rows in errors):
         tex["errors.tex"] = _panel_table(errors, ERROR_TABLE[0], ERROR_TABLE[2], more["errors"],
                                          label="tab:errors", align="lrcccc", wide=True)
@@ -984,6 +1005,27 @@ def tree_study(data: dict, fig_dir: str) -> dict:
     return summary
 
 
+def svm_study(data: dict, fig_dir: str) -> dict:
+    """Tune and diagnose our SVM on Task B (svm_study, Problems 3b-3d, 4b).
+
+    Only the train and validation splits are used; the chosen lambda is returned
+    for the SVM in the headline tables. Figure names (not paths) are kept, so
+    two runs into different folders give the same metrics.json.
+    """
+    from . import svm_study as study
+
+    X, y = data["X"], data["tier"]
+    res = study.run(X["train"], y["train"], X["val"], y["val"], fig_dir=fig_dir, seed=SEED)
+    res["figures"] = [os.path.basename(path) for path in res["figures"]]
+    return res
+
+
+SVM_STUDY_COLUMNS = (["lambda", "w_norm", "margin", "support_share", "objective", "train_f1",
+                      "val_f1"],
+                     ["$\\lambda$", "$\\lVert w\\rVert$", "$2/\\lVert w\\rVert$", "SV share",
+                      "$J$", "train F1", "val F1"])
+
+
 def main(argv: list[str] | None = None) -> dict:
     parser = argparse.ArgumentParser(description="Reproduce every number and figure.")
     parser.add_argument("--data", default=DATA_PATH, help="path to house_sale.csv")
@@ -997,6 +1039,8 @@ def main(argv: list[str] | None = None) -> dict:
                         help="skip the tree tuning / sklearn comparison / forest study and use "
                              "the fixed TREE_REGRESSION and TREE_CLASSIFICATION settings; "
                              "writes to no_tree_study/ subfolders so the real outputs are kept")
+    parser.add_argument("--no-svm-study", action="store_true",
+                        help="skip the SVM study and use the fixed SVM settings")
     parser.add_argument("--no-figures", action="store_true", help="skip writing figures")
     parser.add_argument("--results-dir", default=None, help=f"default {RESULTS_DIR}")
     parser.add_argument("--tables-dir", default=None, help=f"default {TABLES_DIR}")
@@ -1044,13 +1088,25 @@ def main(argv: list[str] | None = None) -> dict:
         tree_b = study["task_b"]["settings"]
         per_size = study["task_a"]["target"] != "log(price)"
 
+    # 1c. SVM study: lambda chosen on the validation split (Problem 4c).
+    svm, svm_res = SVM, None
+    if not args.no_svm_study:
+        print("SVM study (lambda / schedule / epoch / RFF gamma sweeps on validation) ...",
+              flush=True)
+        if args.no_figures:
+            with tempfile.TemporaryDirectory() as scratch:
+                svm_res = svm_study(data, scratch)
+        else:
+            svm_res = svm_study(data, out_dirs["figures"])
+        svm = {**SVM, "lambda_": svm_res["best_lambda"]}
+
     # 2-4. models
     print("Task A: regression on log(price)"
           + (" (trees fitted on log(price per m2 / sot), area added back)" if per_size else ""))
     specs_a = task_a_models(tree_a, data["feature_names"], per_size)
     rows_a, outputs_a = run_task("A", specs_a, data, folds, n_boot)
     print("Task B: premium vs standard")
-    specs_b = task_b_models(tree_b)
+    specs_b = task_b_models(tree_b, svm)
     rows_b, outputs_b = run_task("B", specs_b, data, folds, n_boot)
 
     # 5. analysis
@@ -1067,7 +1123,8 @@ def main(argv: list[str] | None = None) -> dict:
     config = {"tree_regression": tree_a, "tree_classification": tree_b,
               "tree_task_a_target": "log(price per m2 / sot)" if per_size else "log(price)",
               "tree_settings_from": "fixed" if study is None else "tree study (validation)",
-              "svm": SVM, "folds": folds, "n_boot": n_boot, "fast": args.fast}
+              "svm": svm, "svm_settings_from": "fixed" if svm_res is None else
+              "SVM study (validation)", "folds": folds, "n_boot": n_boot, "fast": args.fast}
     tables = {"A": result_rows(rows_a, "A"), "B": result_rows(rows_b, "B")}
     tables["headline"] = headline_rows(tables["A"], tables["B"])
     report = {
@@ -1083,6 +1140,7 @@ def main(argv: list[str] | None = None) -> dict:
         "scaling": scaling,
         "tree_vs_sklearn": agreement,
         "tree_study": study,
+        "svm_study": svm_res,
         "analysis": analysis,
     }
     for task, name in (("A", "Task A: log(price)"), ("B", "Task B: premium vs standard")):
