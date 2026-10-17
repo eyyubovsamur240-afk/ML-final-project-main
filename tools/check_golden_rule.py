@@ -42,6 +42,7 @@ PROTECTED = [
     "src/decision_tree.py",
     "src/svm.py",
     "src/random_forest.py",
+    "src/rff.py",
 ]
 
 # Third-party top-level packages allowed inside PROTECTED files, besides the
